@@ -55,7 +55,7 @@ threads_per_block = (8, 32, 4)
 threads_per_block_2 = (32, 32, 1)
 max_threads = 1024
 
-max_lenght = np.int32(967)
+max_lenght = np.int32(208)
 
 number_of_neighs = 80
 
