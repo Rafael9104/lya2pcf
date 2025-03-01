@@ -16,6 +16,7 @@ import numpy as np
 import os
 from multiprocessing import Pool
 import fitsio
+import warnings
 
 import cosmology
 from forest_class import quasar
@@ -66,7 +67,7 @@ def substitute_parameter(key,value):
     for line in fileinput.input("parameters.py", inplace=True):
         if key in line:
             value_str = str(int(value))
-            line = key + " = np.int32(" + value_str + ")"
+            line = key + " = np.int32(" + value_str + ")\n"
         print('{}'.format(line), end='')
 
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -78,6 +79,13 @@ parser.add_argument('--data-dir', type=str, default = data_dir,
 parser.add_argument('--split-number', type=int, default = 1,
     help = 'Number of files to split the data.')
 args = parser.parse_args()
+
+if os.path.exists(args.data_dir):
+    warnings.warn('The directory deltas_lya2pcf exists. Erase the directory to continum.')
+    quit()
+
+if not os.path.exists(args.data_dir):
+    os.makedirs(args.data_dir)
 
 data = {}
 directory = glob.glob(args.delta_dir + '/*.fits.gz')
@@ -107,28 +115,51 @@ angmax = 2*np.arcsin(0.5*rtmax/min_distance)
 print('Minimum comoving distance to a forest (Mpc/h):',min_distance)
 print('Maximum angle between pairs of skewers that are used (rad):', angmax)
 
-if not os.path.exists(args.data_dir):
-    os.makedirs(args.data_dir)
 list_of_pixels = list(data.keys())
 list_of_pixels.sort()
 
 
-# Here we will search for the neighbors of each forest
+# Here we will search for the neighbors of each forest, in order to include them in
+# the data files asociated with each.
+
+# Dictionary of pixels containing neighbors to each pixel
+# pixels_close_to_pixels[primary_pixel] = [list of pixels with neighbors to primary_pixel]
+pixels_close_to_pixels={}
+
+#maximum_number_of_neighs = 0
 for pix in list_of_pixels:
+    list_of_pixels_neigh = []
     for forest in data[pix]:
         neigh_names, neigh_pixels = forest.neighborhood_names(data,angmax)
         forest.neigh_names = neigh_names
         forest.neigh_pixels = neigh_pixels
+        list_of_pixels_neigh += neigh_pixels
+       # number_neighs = len(neigh_names)
+       # if number_neighs >= maximum_number_of_neighs:
+       #     maximum_number_of_neighs = number_neighs
+    list_of_pixels_neigh_unique = list(set(list_of_pixels_neigh))
+    pixels_close_to_pixels[pix] = list_of_pixels_neigh_unique
+
 
 pixels_partial = np.array_split(list_of_pixels, args.split_number)
 i=1
+dict_of_primary_pixels = {}
 for subset in pixels_partial:
-    subdata = {x: data[x] for x in subset}
+    dict_of_primary_pixels[i] = subset
+    list_of_secondary_pixels = []
+    for pix1 in subset:
+        list_of_secondary_pixels += pixels_close_to_pixels[pix1]
+    subset_total = list(set(list_of_secondary_pixels + list(subset)))
+    subdata = {x: data[x] for x in subset_total}
+
     np.save(args.data_dir+'/data'+str(i),subdata)
     i+=1
-    for pixel in subset:
-        data.pop(pixel)
+    # Ya no se puede hacer el pop porque los pixeles se guardan en mas de un archivo.
+    # for pixel in subset:
+    #     data.pop(pixel)
+np.save(args.data_dir+'/dict_of_primary_pixels',dict_of_primary_pixels)
 
 substitute_parameter("max_lenght",max_lenght)
+#substitute_parameter("number_of_neighs",maximum_number_of_neighs)
 print("The largest forest has ",max_lenght, " data points.")
 print("The number of forests is:", j)
