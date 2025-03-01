@@ -6,12 +6,19 @@ import argparse
 import glob
 import os
 import time
+import warnings
 
 from parameters import *
 from forest_class import quasar
 
 from mpi4py import MPI
 
+
+def extractor_number(filename):
+    extraction = filename.split('data')
+    extraction_2 = extraction[1].split('.')
+    number_of_data = extraction_2[0]
+    return int(number_of_data)
 
 if __name__ == '__main__':
 
@@ -50,9 +57,13 @@ if __name__ == '__main__':
     
 
     # global data
+    list_of_primary_pixels = np.load(data_dir+"dict_of_primary_pixels.npy", allow_pickle=True).item()
     if mpi_rank == 0:
         directory_data = glob.glob(data_dir+"/data*.npy")
         directory_split = np.array_split(directory_data, mpi_size)
+        if len(directory_data) < mpi_size:
+            directory_size = str(len(directory_data))
+            warnings.warn("You are using more cores than data files. Some cores are not used.")
     else:
         directory_split = None
     directory_split = comm.scatter(directory_split, root = 0)
@@ -73,9 +84,12 @@ if __name__ == '__main__':
 
     for datafile in directory_split:
 
+        number_of_file = extractor_number(datafile)
+
 
         data = np.load(datafile, allow_pickle=True).item()
-        pixels_list = np.array(list(data.keys()))
+        # pixels_list = np.array(list(data.keys()))
+        pixels_list = np.array(list_of_primary_pixels[number_of_file])
         print("Soy el nodo numero:", mpi_rank, "me tocan los pixeles", pixels_list)
         print('Computing the maximum angle that we are interested in.')
         log_file.write('\nComputing the maximum angle that we are interested in.')
