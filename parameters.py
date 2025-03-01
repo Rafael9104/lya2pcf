@@ -4,7 +4,7 @@
 import numpy as np
 
 # IO parammeters
-data_dir = './'
+data_dir = './deltas_lya2pcf/'
 corr_dir = './outputs/test/'
 
 
@@ -55,13 +55,12 @@ threads_per_block = (8, 32, 4)
 threads_per_block_2 = (32, 32, 1)
 max_threads = 1024
 
-max_lenght = np.int32(916)
+max_lenght = np.int32(967)
 
-number_of_neighs = 80 
+number_of_neighs = 80
 
 # Set to true to fix broadcast errors
 distributed_memory = False
-
 # If using a machine with several cuda devices
 number_of_cuda_devices = 1
 cuda_device_first_number = 0
