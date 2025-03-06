@@ -97,6 +97,9 @@ data_list = pool.map(record_from_deltas, directory)
 max_lenght = 0
 min_distance = 1e10
 j=0
+
+tamanos = []
+
 for list_of_forests in data_list:
     for forest_data in list_of_forests:
         j+=1
@@ -109,6 +112,7 @@ for list_of_forests in data_list:
             data[forest_data.pix].append(forest_data)
         else:
             data[forest_data.pix] = [forest_data]
+        tamanos.append(nueva_long)
 del data_list
 
 angmax = 2*np.arcsin(0.5*rtmax/min_distance)
@@ -119,47 +123,34 @@ list_of_pixels = list(data.keys())
 list_of_pixels.sort()
 
 
-# Here we will search for the neighbors of each forest, in order to include them in
-# the data files asociated with each.
-
-# Dictionary of pixels containing neighbors to each pixel
-# pixels_close_to_pixels[primary_pixel] = [list of pixels with neighbors to primary_pixel]
-pixels_close_to_pixels={}
-
+# Here we will search for the neighbors of each forest
+vecinos = []
 #maximum_number_of_neighs = 0
 for pix in list_of_pixels:
-    list_of_pixels_neigh = []
     for forest in data[pix]:
+        min_distance = forest.dc[0]
+        angmax = 2*np.arcsin(0.5*rtmax/min_distance)
         neigh_names, neigh_pixels = forest.neighborhood_names(data,angmax)
         forest.neigh_names = neigh_names
         forest.neigh_pixels = neigh_pixels
-        list_of_pixels_neigh += neigh_pixels
-       # number_neighs = len(neigh_names)
-       # if number_neighs >= maximum_number_of_neighs:
-       #     maximum_number_of_neighs = number_neighs
-    list_of_pixels_neigh_unique = list(set(list_of_pixels_neigh))
-    pixels_close_to_pixels[pix] = list_of_pixels_neigh_unique
-
+        number_neighs = len(neigh_names)
+        #if number_neighs >= maximum_number_of_neighs:
+        #    maximum_number_of_neighs = number_neighs
+        vecinos.append(number_neighs)
+np.savetxt("tamanos",tamanos)
+np.savetxt("vecinos",vecinos)
 
 pixels_partial = np.array_split(list_of_pixels, args.split_number)
 i=1
-dict_of_primary_pixels = {}
 for subset in pixels_partial:
-    dict_of_primary_pixels[i] = subset
-    list_of_secondary_pixels = []
-    for pix1 in subset:
-        list_of_secondary_pixels += pixels_close_to_pixels[pix1]
-    subset_total = list(set(list_of_secondary_pixels + list(subset)))
-    subdata = {x: data[x] for x in subset_total}
-
+    subdata = {x: data[x] for x in subset}
     np.save(args.data_dir+'/data'+str(i),subdata)
     i+=1
-    # Ya no se puede hacer el pop porque los pixeles se guardan en mas de un archivo.
-    # for pixel in subset:
-    #     data.pop(pixel)
-np.save(args.data_dir+'/dict_of_primary_pixels',dict_of_primary_pixels)
+    for pixel in subset:
+        data.pop(pixel)
 
 substitute_parameter("max_lenght",max_lenght)
 #substitute_parameter("number_of_neighs",maximum_number_of_neighs)
 print("The largest forest has ",max_lenght, " data points.")
+#print("The maximum number of neighbors for one forest",maximum_number_of_neighs)
 print("The number of forests is:", j)
