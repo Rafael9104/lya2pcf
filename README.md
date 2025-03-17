@@ -81,7 +81,7 @@ in case you need to left free the first cuda devices in your machine.
 
 Josue De Santiago
 
-Rafael Gtz. Balboa
+Rafael Gutiérrez Balboa
 
 Alma Gonzalez (Science Advisor)
 
