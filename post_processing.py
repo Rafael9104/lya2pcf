@@ -112,10 +112,6 @@ if __name__ == '__main__':
         description='This program takes the histogram files computed from 3pla.py and outputs the correlation.')
     parser.add_argument('--write-coordinates', action = 'store_true', required = False,
         help = 'Write arrays with the central values of the coordinates to each point of the correlation function.')
-    parser.add_argument('--diagonal-error', action = 'store_true', required = False,
-        help = 'For large number of bins, specially in the three-point correlation, the errors are estimated without the full covariance.')
-    parser.add_argument('--isotropic', action = 'store_true', required = False,
-        help = 'Produces the isotropic three-point correlation.')
     args = parser.parse_args()
 
     shape_hist = (numpix_rp, numpix_rt)
@@ -138,16 +134,6 @@ if __name__ == '__main__':
         w_hist, dw_hist = np.load(file)
         if counter == 0:
             shape = w_hist.shape
-        if args.three_point:
-            # In order to speed up the computations in the three point, if a
-            # triangle with sides ABC is counted, the same triangle but
-            # with sides ACB is not,
-            # here we simmetrize the histograms to accout for that.
-            w_hist, dw_hist = symmetrizing_3d_hist_anis(w_hist, dw_hist)
-            if args.isotropic:
-                w_hist = w_hist.sum(axis=(3,4))
-                dw_hist = dw_hist.sum(axis=(3,4))
-                shape = w_hist.shape
 
         w_hist = w_hist.flatten()
         dw_hist = dw_hist.flatten()
