@@ -51,7 +51,7 @@ if __name__ == '__main__':
             kwargs['performance'] = True
 
         print('Loading extracted file.')
-        data = np.load(data_dir + 'data.npy', allow_pickle=True).item()
+        data = np.load(data_dir + 'data1.npy', allow_pickle=True).item()
 
 
         ####################################################################
