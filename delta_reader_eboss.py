@@ -16,6 +16,7 @@ import numpy as np
 import os
 from multiprocessing import Pool
 import fitsio
+import warnings
 
 import cosmology
 from forest_class import quasar
@@ -62,6 +63,13 @@ parser.add_argument('--data-dir', type=str, default = data_dir,
     help = 'Directory where the data will be stored.')
 args = parser.parse_args()
 
+if os.path.exists(args.data_dir):
+    warnings.warn('The directory deltas_lya2pcf exists. Erase the directory to continum.')
+    quit()
+
+if not os.path.exists(args.data_dir):
+    os.makedirs(args.data_dir)
+
 data = {}
 directory = glob.glob(args.delta_dir + '/*.fits.gz')
 if len(directory) == 0:
@@ -75,7 +83,4 @@ for list_of_forests in data_list:
             data[forest_data.pix].append(forest_data)
         else:
             data[forest_data.pix] = [forest_data]
-if not os.path.exists(args.data_dir):
-    os.makedirs(args.data_dir)
 np.save(args.data_dir+'/data1',data)
-
