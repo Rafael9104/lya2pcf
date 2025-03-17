@@ -13,7 +13,7 @@ $ cd 3pla/
 $ git checkout clean_up
 ```
 
-Install the needed libraries that include: `numpy`, `scipy`, `astropy`, `numba`, `healpy`, `mpy4pi`. If you will be using a GPU you will
+Install the needed libraries that include: `numpy`, `scipy`, `astropy`, `numba`, `healpy`, `mpy4pi`, `fitsio`. If you will be using a GPU you will
 need `pycuda`. You can install these packages from requiriments.txt file as
 ```
 $ conda install --yes --file requirements.txt
