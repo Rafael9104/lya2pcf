@@ -79,9 +79,9 @@ in case you need to left free the first cuda devices in your machine.
 
 ## Code Contributors
 
-Rafael Gtz. Balboa
-
 Josue De Santiago
+
+Rafael Gtz. Balboa
 
 Alma Gonzalez (Science Advisor)
 
