@@ -112,6 +112,8 @@ if __name__ == '__main__':
         description='This program takes the histogram files computed from 3pla.py and outputs the correlation.')
     parser.add_argument('--write-coordinates', action = 'store_true', required = False,
         help = 'Write arrays with the central values of the coordinates to each point of the correlation function.')
+    parser.add_argument('--diagonal-error', action = 'store_true', required = False,
+        help = 'For large number of bins, specially in the three-point correlation, the errors are estimated without the full covariance.')
     args = parser.parse_args()
 
     shape_hist = (numpix_rp, numpix_rt)
