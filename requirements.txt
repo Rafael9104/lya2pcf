@@ -10,3 +10,4 @@ conda-forge::numba
 conda-forge::healpy
 anaconda::mpi4py
 conda-forge::pycuda
+conda-forge::fitsio
