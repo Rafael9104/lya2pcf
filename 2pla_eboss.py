@@ -21,15 +21,12 @@ if __name__ == '__main__':
     cuda_device = str(int(mpi_rank%number_of_cuda_devices + cuda_device_first_number))
     os.environ['CUDA_DEVICE'] = cuda_device
 
-
-    # from correlation_procedures import *
     # Writing log files, one per mpi process
     if not os.path.exists(corr_dir):
         os.makedirs(corr_dir)
     log_filename = corr_dir + 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '.log'
     log_file = open(log_filename,"w+")
 
-    # global data
     if mpi_rank == 0:
         parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description='Takes the data.npy file and computes the two or three point correlation function.')
@@ -89,7 +86,7 @@ if __name__ == '__main__':
 
         if distributed_memory:
 
-            # TODO: The data dictionary is too big to be broadcasted to other nodes as a single object
+            # ALL: The data dictionary is too big to be broadcasted to other nodes as a single object
             # this is a dirty solution
 
             chunks = 2
@@ -126,8 +123,6 @@ if __name__ == '__main__':
     pixels_partial = comm.scatter(pixels_partial, root = 0)
 
 
-
-
     # Moving data dict to the correlation_procedures module
     if args.cpu:
         import correlation_procedures_cpu as correlations
@@ -153,7 +148,6 @@ if __name__ == '__main__':
     pixel_counter = 0
 
     for pixel in pixels_partial:
-      # if pixel == 6088:
 
         log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
         log_file.flush()
