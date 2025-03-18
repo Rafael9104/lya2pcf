@@ -1,4 +1,4 @@
-# 3pla
+# lya2pcf
 This program computes the correlation functions of the Lyman alpha forest.
 
 ## Download and configuration
@@ -9,7 +9,7 @@ $ git clone https://github.com/joselotl/3pla
 ```
 then checkout to the cleaned branch of the repository
 ```
-$ cd 3pla/
+$ cd lya2pcf/
 $ git checkout clean_up
 ```
 
@@ -36,12 +36,12 @@ Next we need to compute the histograms of w and wdelta which is the more computa
 to the appropiate rmax, and number of bins that you want to compute your correlation function, as well as the location of
 your prefered output directory. Then execute:
 ```
-$ mpirun -np NUMBER_OF_CORES python 3pla.py (--cpu | --gpu)
+$ mpirun -np NUMBER_OF_CORES python 2pla.py (--cpu | --gpu)
 ```
 In the case that you are using a GPU, you need specify the number NUMBER_OF_CORES equal to the number of GPUs available.
 If you are usgin data from eBOSS, you need to compute the correlation with the following command instead:
 ```
-$ mpirun -np NUMBER_OF_CORES python 3pla_eboss.py (--cpu | --gpu)
+$ mpirun -np NUMBER_OF_CORES python 2pla_eboss.py (--cpu | --gpu)
 ```
 
 Now that the hardest part has finished, you just need to compute the correlation function and its error with
