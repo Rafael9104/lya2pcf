@@ -21,11 +21,10 @@ if __name__ == '__main__':
     cuda_device = str(int(mpi_rank%number_of_cuda_devices + cuda_device_first_number))
     os.environ['CUDA_DEVICE'] = cuda_device
 
-
-    # from correlation_procedures import *
     # Writing log files, one per mpi process
     if not os.path.exists(corr_dir):
         os.makedirs(corr_dir)
+
     log_filename = corr_dir + 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '_distortion.log'
     log_file = open(log_filename,"w+")
 
@@ -52,7 +51,6 @@ if __name__ == '__main__':
         if args.verbose:
             kwargs['performance'] = True
 
-
     # global data
     if mpi_rank == 0:
         directory_data = glob.glob(data_dir+"/data*.npy")
@@ -68,15 +66,7 @@ if __name__ == '__main__':
     else:
         import distortion_procedures_pycuda as distortion
 
-    #num_pixels_partial = len(pixels_list)
-    
-    #log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
-    #    str(pixels_partial[0]) + ' to ' + str(pixels_partial[-1]))
-
     name_partials = 'distortion_pixel_'
-    #log_file.write('\nComputing the distortion matrix with \nrt_max = ' + str(rtmax) +
-    # '\nrp_max = ' + str(rpmax) + '\npixels in t = ' + str(numpix_rt) + '\npixels in p = ' + str(numpix_rp))
-
 
     log_file.flush()
 
@@ -84,8 +74,6 @@ if __name__ == '__main__':
     total_bins = np.prod(shape_hist)
     disto = np.zeros((total_bins,total_bins))
     weight_A = np.zeros(total_bins)
-
-
 
     for datafile in directory_split:
         print('Loading extracted file.')
@@ -106,13 +94,12 @@ if __name__ == '__main__':
 
         angmax = 2*np.arcsin(0.5*rtmax/dmin)
         # We are not considering the case where \xi and \hat{\xi} have different dimensions
-        # Todo: Read shape from correlation
+        # All: Read shape from correlation
 
         print('Minimum comoving distance to a forest (Mpc/h):',dmin)
         print('Maximum angle between pairs of skewers that are used (rad):', angmax)
 
         distortion.init(data, log_file, shape_hist, angmax, float(args.excluded))
-
 
         num_pixels_partial = len(pixels_list)
 
@@ -134,8 +121,6 @@ if __name__ == '__main__':
 
         pixel_counter = 0
         for pixel in pixels_list:
-            #for pixel in pixeles:
-              # if pixel == 6088:
 
             log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
             log_file.flush()
@@ -160,5 +145,3 @@ if __name__ == '__main__':
 
     if mpi_rank == 0:
             np.save(corr_dir + 'distortion', distortion_total/weight_total[:, None])
-            # np.save(corr_dir + 'distortion', distortion_total)
-            # np.save(corr_dir + 'diagb', weight_A)
