@@ -21,8 +21,6 @@ if __name__ == '__main__':
     cuda_device = str(int(mpi_rank%number_of_cuda_devices + cuda_device_first_number))
     os.environ['CUDA_DEVICE'] = cuda_device
 
-
-    # from correlation_procedures import *
     # Writing log files, one per mpi process
     if not os.path.exists(corr_dir):
         os.makedirs(corr_dir)
