@@ -98,21 +98,21 @@ max_lenght = 0
 min_distance = 1e10
 j=0
 
-tamanos = []
+sizes = []
 
 for list_of_forests in data_list:
     for forest_data in list_of_forests:
         j+=1
-        nueva_long=len(forest_data.dc)
-        if nueva_long>max_lenght:
-            max_lenght = nueva_long
+        new_long=len(forest_data.dc)
+        if new_long>max_lenght:
+            max_lenght = new_long
         if forest_data.dc[0] < min_distance:
             min_distance = forest_data.dc[0]
         if forest_data.pix in data.keys():
             data[forest_data.pix].append(forest_data)
         else:
             data[forest_data.pix] = [forest_data]
-        tamanos.append(nueva_long)
+        sizes.append(new_long)
 del data_list
 
 angmax = 2*np.arcsin(0.5*rtmax/min_distance)
@@ -124,8 +124,7 @@ list_of_pixels.sort()
 
 
 # Here we will search for the neighbors of each forest
-vecinos = []
-#maximum_number_of_neighs = 0
+neighbors = []
 for pix in list_of_pixels:
     for forest in data[pix]:
         min_distance = forest.dc[0]
@@ -134,11 +133,9 @@ for pix in list_of_pixels:
         forest.neigh_names = neigh_names
         forest.neigh_pixels = neigh_pixels
         number_neighs = len(neigh_names)
-        #if number_neighs >= maximum_number_of_neighs:
-        #    maximum_number_of_neighs = number_neighs
-        vecinos.append(number_neighs)
-np.savetxt("tamanos",tamanos)
-np.savetxt("vecinos",vecinos)
+        neighbors.append(number_neighs)
+np.savetxt("sizes", sizes)
+np.savetxt("neighbors", neighbors)
 
 pixels_partial = np.array_split(list_of_pixels, args.split_number)
 i=1
@@ -149,8 +146,6 @@ for subset in pixels_partial:
     for pixel in subset:
         data.pop(pixel)
 
-substitute_parameter("max_lenght",max_lenght)
-#substitute_parameter("number_of_neighs",maximum_number_of_neighs)
-print("The largest forest has ",max_lenght, " data points.")
-#print("The maximum number of neighbors for one forest",maximum_number_of_neighs)
+substitute_parameter("max_lenght", max_lenght)
+print("The largest forest has ", max_lenght, " data points.")
 print("The number of forests is:", j)
