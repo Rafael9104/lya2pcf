@@ -11,3 +11,4 @@ conda-forge::healpy
 anaconda::mpi4py
 conda-forge::pycuda
 conda-forge::fitsio
+nvidia::cuda-nvcc
