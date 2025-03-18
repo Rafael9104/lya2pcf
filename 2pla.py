@@ -76,7 +76,7 @@ if __name__ == '__main__':
 
         data = np.load(datafile, allow_pickle=True).item()
         pixels_list = np.array(list(data.keys()))
-        print("Soy el nodo numero:", mpi_rank, "me tocan los pixeles", pixels_list)
+        print("I am node number:", mpi_rank, "I have the pixels", pixels_list)
         print('Computing the maximum angle that we are interested in.')
         log_file.write('\nComputing the maximum angle that we are interested in.')
 
