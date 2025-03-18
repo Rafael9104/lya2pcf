@@ -45,9 +45,6 @@ if __name__ == '__main__':
     if args.verbose:
         kwargs['performance'] = True
 
-    
-
-    # global data
     if mpi_rank == 0:
         directory_data = glob.glob(data_dir+"/data*.npy")
         directory_split = np.array_split(directory_data, mpi_size)
@@ -107,7 +104,6 @@ if __name__ == '__main__':
         pixel_counter = 0
 
         for pixel in pixels_list:
-          # if pixel == 6088:
 
             log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
             log_file.flush()
@@ -121,9 +117,3 @@ if __name__ == '__main__':
                 break
 
     print('Finished correlation computation.')
-
-        
-
-        
-
-
