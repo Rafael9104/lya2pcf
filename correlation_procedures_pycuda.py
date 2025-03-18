@@ -52,7 +52,6 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     global myfloat
     # In order to change fron 64 to 32 bits, change this lines as well as the appropiate lines in cuda_kernels.cpp
     myfloat = np.float64
-    # myfloat = np.float32
 
     if not pixel_list:
         pixel_list = list(data.keys())
@@ -125,7 +124,6 @@ def two_point_per_pixel(pixel, **kargs):
             Shape of the histogram in bits
     """
     # Preparing data structure for the partial histograms
-    # Preparing data structure for the partial histograms
     w_hist = np.zeros(shape_hist, dtype = myfloat)
     dw_hist = np.zeros(shape_hist, dtype = myfloat)
     numpix2d_d = gpuarray.to_gpu(np.array(shape_hist, dtype = np.int32))
@@ -137,7 +135,7 @@ def two_point_per_pixel(pixel, **kargs):
 
     # Passing data to the GPU
     rmax_d = gpuarray.to_gpu(np.array([rpmax,rtmax],dtype=myfloat))
-        # Ojo, esto no se puede cambiar a menos que cambie el procedimiento del kernel
+        # Be careful, this can not change unless the kernel procedure change.
     threads_per_block = (1, 16, 16)
 
     for forest1 in data[pixel]:
@@ -155,7 +153,7 @@ def two_point_per_pixel(pixel, **kargs):
         neigh_index_d = gpuarray.to_gpu(neigh_index)
         neigh_sizes_d = gpuarray.to_gpu(neigh_sizes)
 
-        # Ojo, esto no se puede cambiar a menos que cambie el procedimiento del kernel
+        # Be careful, this can not change unless the kernel procedure change.
         blocks_per_grid = (forest1_lenght, 1, 1)
 
         pair_correlation(base_d, neigh_index_d, neigh_sizes_d,
