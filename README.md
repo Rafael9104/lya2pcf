@@ -18,7 +18,8 @@ need `pycuda`. You can install these packages from requiriments.txt file as
 ```
 $ conda install --yes --file requirements.txt
 ```
-
+If you don't have install nvcc you can remove the hashtag from nvcc installation in the requirements,txt file.
+ 
 ## Usage
 
 To use it, first produce the delta files with PICCA or from another source that could produce the same format as PICCA.
