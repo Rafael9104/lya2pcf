@@ -172,8 +172,6 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     le3 = np.zeros(shape_hist + (number_of_neighs,), dtype = np.bool_).nbytes
     le4 = np.empty((number_of_neighs,), dtype = np.float32)
 
-
-
     etas12 = cuda.mem_alloc(le1.nbytes)
     etas21 = cuda.mem_alloc(le1.nbytes)
     etas22 = cuda.mem_alloc(le2.nbytes)
@@ -186,14 +184,14 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     activeBs_index = gpuarray.zeros(shape_hist + (number_of_neighs,), dtype = np.int32)
     index_j = cuda.mem_alloc(le4.nbytes)
 
-    tamano_auxiliars_real = np.empty((max_lenght, max_lenght, number_of_neighs), dtype = np.float32).nbytes
-    tamano_auxiliars_int = np.empty((max_lenght, max_lenght, number_of_neighs), dtype = np.int32).nbytes
-    x12 = cuda.mem_alloc(tamano_auxiliars_real)
-    y12 = cuda.mem_alloc(tamano_auxiliars_real)
-    z12 = cuda.mem_alloc(tamano_auxiliars_real)
-    r12 = cuda.mem_alloc(tamano_auxiliars_real)
-    bin_rt = cuda.mem_alloc(tamano_auxiliars_int)
-    bin_rp = cuda.mem_alloc(tamano_auxiliars_int)
+    size_auxiliars_real = np.empty((max_lenght, max_lenght, number_of_neighs), dtype = np.float32).nbytes
+    size_auxiliars_int = np.empty((max_lenght, max_lenght, number_of_neighs), dtype = np.int32).nbytes
+    x12 = cuda.mem_alloc(size_auxiliars_real)
+    y12 = cuda.mem_alloc(size_auxiliars_real)
+    z12 = cuda.mem_alloc(size_auxiliars_real)
+    r12 = cuda.mem_alloc(size_auxiliars_real)
+    bin_rt = cuda.mem_alloc(size_auxiliars_int)
+    bin_rp = cuda.mem_alloc(size_auxiliars_int)
 def distortion_per_pixel(forest_list, **kargs):
     """ This function loops over the forests in a pixel and finds its neighbors
     I will use the method by Helion and only setting r1 as the center node
@@ -206,13 +204,9 @@ def distortion_per_pixel(forest_list, **kargs):
     cuda.memset_d32_async(dist_hist_d, 0, int(np.prod(dist_hist.shape)))
     weight_B_d.fill(0)
 
-
-
-
     print('new pixel with', len(forest_list))
 
     for forest1 in forest_list[:]:
-      # if forest1.name == 434801303:
         # Preparing the data structure for the auxiliar histograms
         cuda.memset_d32_async(etas12,0,int(np.prod(le1.shape)))
         cuda.memset_d32_async(etas13,0,int(np.prod(le1.shape)))
@@ -285,6 +279,3 @@ def distortion_per_pixel(forest_list, **kargs):
     weight_B = weight_B_d.get()
 
     return (dist_hist, weight_B)
-
-
-
