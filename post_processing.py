@@ -1,5 +1,5 @@
 """
-    This program takes the histogram files computed from 3pla.py and outputs the
+    This program takes the histogram files computed from 2pla.py and outputs the
     correlation, covariance matrix and plots.
 """
 import glob
@@ -109,7 +109,7 @@ def diag_error(da,we):
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description='This program takes the histogram files computed from 3pla.py and outputs the correlation.')
+        description='This program takes the histogram files computed from 2pla.py and outputs the correlation.')
     parser.add_argument('--write-coordinates', action = 'store_true', required = False,
         help = 'Write arrays with the central values of the coordinates to each point of the correlation function.')
     parser.add_argument('--diagonal-error', action = 'store_true', required = False,
