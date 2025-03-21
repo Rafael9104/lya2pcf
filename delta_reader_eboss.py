@@ -64,7 +64,7 @@ parser.add_argument('--data-dir', type=str, default = data_dir,
 args = parser.parse_args()
 
 if os.path.exists(args.data_dir):
-    warnings.warn('The directory ',args.data_dir, 'exists. This procedure might mix deltas from a different run.')
+    warnings.warn('The output delta directory already exists. This procedure might mix deltas from a different run.')
 
 if not os.path.exists(args.data_dir):
     os.makedirs(args.data_dir)

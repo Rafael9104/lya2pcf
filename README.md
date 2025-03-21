@@ -5,12 +5,11 @@ This program computes the correlation functions of the Lyman alpha forest.
 
 If you are intended to use it for testing download the git repository with
 ```
-$ git clone https://github.com/joselotl/3pla
+$ git clone https://github.com/Rafael9104/lya2pcf
 ```
-then checkout to the cleaned branch of the repository
+then move to the downloaded directory 
 ```
 $ cd lya2pcf/
-$ git checkout clean_up
 ```
 
 Install the needed libraries that include: `numpy`, `scipy`, `astropy`, `numba`, `healpy`, `mpy4pi`, `fitsio`. If you will be using a GPU you will
@@ -18,7 +17,10 @@ need `pycuda`. You can install these packages from requiriments.txt file as
 ```
 $ conda install --yes --file requirements.txt
 ```
-If you do not have install `nvcc` you can remove the hashtag from nvcc installation in the requirements,txt file.
+Currently, latest version of healpy is not in conda, therefore you need to install it with pip
+```
+pip install --force-reinstall healpy numpy==1.24
+```
  
 ## Usage
 
