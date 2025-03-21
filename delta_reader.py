@@ -81,8 +81,7 @@ parser.add_argument('--split-number', type=int, default = 1,
 args = parser.parse_args()
 
 if os.path.exists(args.data_dir):
-    warnings.warn('The directory deltas_lya2pcf exists. Erase the directory to continum.')
-    quit()
+    warnings.warn('The directory ',args.data_dir, 'exists. This procedure might mix deltas from a different run.')
 
 if not os.path.exists(args.data_dir):
     os.makedirs(args.data_dir)
