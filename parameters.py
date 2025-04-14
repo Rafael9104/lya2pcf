@@ -13,6 +13,10 @@ corr_dir = './outputs/test/'
 bin_size_r = 4 #Mpc/h
 rmax = 200  #Mpc/h
 
+# Name of the keyword for the deltas in the .fit.gz files
+#delta_key = "DELTA" #Use this for eBOSS, DESI EDR and DESIY5 mocks
+delta_key = "DELTA_BLIND" #Use this for DESI DR1 onwards
+
 # For the two point
 rpmax = rmax #Mpc/h
 rtmax = rmax #Mpc/h

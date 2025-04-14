@@ -31,7 +31,7 @@ def record_from_deltas(file):
     print('Extracting from file ',file)
     list_of_forests = []
     deltafile = fitsio.FITS(file)
-    numberofforests,numberoflambdas = deltafile['DELTA'].get_dims()
+    numberofforests,numberoflambdas = deltafile[delta_key].get_dims()
     for i in range(numberofforests):
         metadata=deltafile["METADATA"][:]
         forest_data = quasar(metadata["LOS_ID"][i],
@@ -40,7 +40,7 @@ def record_from_deltas(file):
             metadata["RA"][i],
             metadata["DEC"][i],
             numberoflambdas)
-        delta1 = deltafile['DELTA'][i,:][0]
+        delta1 = deltafile[delta_key][i,:][0]
         mask = np.isfinite(delta1)
         lambd_list = deltafile['LAMBDA'][:]
         lambd = lambd_list[mask]
@@ -49,7 +49,7 @@ def record_from_deltas(file):
         correctionfactor=np.power((z + 1.)/(1. + z_ref), gammaovertwo)
         weight_list = deltafile['WEIGHT'][i,:][0] 
         forest_data.we = weight_list[mask] * correctionfactor
-        delta_list = deltafile['DELTA'][i,:][0]
+        delta_list = deltafile[delta_key][i,:][0]
         forest_data.fill_dw(delta_list[mask], loglam, True)
         #forest_data.dw = forest.data['WEIGHT']*forest.data['DELTA']*correctionfactor
         
