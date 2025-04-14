@@ -51,13 +51,8 @@ if __name__ == '__main__':
         if args.verbose:
             kwargs['performance'] = True
 
-    # global data
-    if mpi_rank == 0:
-        directory_data = glob.glob(data_dir+"/data*.npy")
-        directory_split = np.array_split(directory_data, mpi_size)
-    else:
-        directory_split = None
-    directory_split = comm.scatter(directory_split, root = 0)
+    print('Loading extracted file.')
+    data = np.load(data_dir + 'data1.npy', allow_pickle=True).item()
 
     # Moving data dict to the correlation_procedures module
     if args.cpu:
@@ -75,65 +70,72 @@ if __name__ == '__main__':
     disto = np.zeros((total_bins,total_bins))
     weight_A = np.zeros(total_bins)
 
-    for datafile in directory_split:
-        print('Loading extracted file.')
-        data = np.load(datafile, allow_pickle=True).item()
-        pixels_list = np.array(list(data.keys()))
-        print("The process number:", mpi_rank, "is going to compute the following pixels:", pixels_list)
-        print('Computing the maximum angle that we are interested in.')
-        log_file.write('\nComputing the maximum angle that we are interested in.')
+    pixels_total=np.array(list(data.keys()))
+    lpix = len(pixels_total)
+    print('Number of non-empty healpix pixels:', lpix)
+    log_file.write('\nNumber of non-empty healpix pixels: ' + str(lpix))
 
-        dminlist=[]
-        for pixel in data:
-            for forest in data[pixel]:
-                dminlist.append(forest.dc[0])
-        try:
-            dmin  = min(dminlist)
-        except:
-            raise NameError('Empty data. Did you write correctly the input directory?')
+    print('Computing partial histograms for each pixel.')
 
-        angmax = 2*np.arcsin(0.5*rtmax/dmin)
-        # We are not considering the case where \xi and \hat{\xi} have different dimensions
-        # All: Read shape from correlation
+    # Dividing the total number of pixels between the available mpi kernels
+    pixels_partial = np.array_split(pixels_total, mpi_size)
+    pixels_list = comm.scatter(pixels_partial, root = 0)
 
-        print('Minimum comoving distance to a forest (Mpc/h):',dmin)
-        print('Maximum angle between pairs of skewers that are used (rad):', angmax)
+    print("The process number:", mpi_rank, "is going to compute the following pixels:", pixels_list)
+    print('Computing the maximum angle that we are interested in.')
+    log_file.write('\nComputing the maximum angle that we are interested in.')
 
-        distortion.init(data, log_file, shape_hist, angmax, float(args.excluded))
+    dminlist=[]
+    for pixel in data:
+        for forest in data[pixel]:
+            dminlist.append(forest.dc[0])
+    try:
+        dmin  = min(dminlist)
+    except:
+        raise NameError('Empty data. Did you write correctly the input directory?')
 
-        num_pixels_partial = len(pixels_list)
+    angmax = 2*np.arcsin(0.5*rtmax/dmin)
+    # We are not considering the case where \xi and \hat{\xi} have different dimensions
+    # All: Read shape from correlation
 
-        lpix = len(pixels_list)
-        print('Number of non-empty healpix pixels:', lpix)
-        log_file.write('\nNumber of non-empty healpix pixels: ' + str(lpix))
+    print('Minimum comoving distance to a forest (Mpc/h):',dmin)
+    print('Maximum angle between pairs of skewers that are used (rad):', angmax)
 
-        print('Computing partial histograms for each pixel.')
+    distortion.init(data, log_file, shape_hist, angmax, float(args.excluded))
 
-        # Dividing the total number of pixels between the available mpi kernels
-        pixels_partial = np.array_split(pixels_list, mpi_size)
-        log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
-            str(pixels_list[0]) + ' to ' + str(pixels_list[-1]))
+    num_pixels_partial = len(pixels_list)
+
+    lpix = len(pixels_list)
+    print('Number of non-empty healpix pixels:', lpix)
+    log_file.write('\nNumber of non-empty healpix pixels: ' + str(lpix))
+
+    print('Computing partial histograms for each pixel.')
+
+    # Dividing the total number of pixels between the available mpi kernels
+    pixels_partial = np.array_split(pixels_list, mpi_size)
+    log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
+        str(pixels_list[0]) + ' to ' + str(pixels_list[-1]))
 
 
-        ###############################################################################
-        # This is the core of the program, where the distortion matrix is computed    #
-        ###############################################################################
+    ###############################################################################
+    # This is the core of the program, where the distortion matrix is computed    #
+    ###############################################################################
 
-        pixel_counter = 0
-        for pixel in pixels_list:
+    pixel_counter = 0
+    for pixel in pixels_list:
 
-            log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
-            log_file.flush()
+        log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
+        log_file.flush()
 
-            disto_pix, weight_pix = distortion.distortion_per_pixel(data[pixel], **kwargs)
-            disto += disto_pix
-            weight_A += weight_pix
+        disto_pix, weight_pix = distortion.distortion_per_pixel(data[pixel], **kwargs)
+        disto += disto_pix
+        weight_A += weight_pix
 
-            pixel_counter += 1
-            if args.verbose and pixel_counter > 1:
-                print('Exiting early due to --verbose option.')
-                break
-        print("Finised data file"+datafile)
+        pixel_counter += 1
+        if args.verbose and pixel_counter > 1:
+            print('Exiting early due to --verbose option.')
+            break
+    print("Finised data file"+datafile)
 
     print('Finished distortion computation.')
     if mpi_size > 1:
