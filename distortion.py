@@ -135,7 +135,7 @@ if __name__ == '__main__':
         if args.verbose and pixel_counter > 1:
             print('Exiting early due to --verbose option.')
             break
-    print("Finised data file"+datafile)
+    #print("Finised data file"+datafile)
 
     print('Finished distortion computation.')
     if mpi_size > 1:
