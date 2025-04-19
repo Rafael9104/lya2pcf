@@ -42,9 +42,9 @@ your prefered output directory. Then execute:
 $ mpirun -np NUMBER_OF_CORES python 2pla.py (--cpu | --gpu)
 ```
 In the case that you are using a GPU, you need specify the number NUMBER_OF_CORES equal to the number of GPUs available.
-If you are usgin data from eBOSS, you need to compute the correlation with the following command instead:
+If you are using more than one data#.npy file where you stored the deltas, you need to compute the correlation with the following command instead:
 ```
-$ mpirun -np NUMBER_OF_CORES python 2pla_eboss.py (--cpu | --gpu)
+$ mpirun -np NUMBER_OF_CORES python 2pla_multiple_data.py (--cpu | --gpu)
 ```
 
 Now that the hardest part has finished, you just need to compute the correlation function and its error with
@@ -58,7 +58,11 @@ To compute the distortion matrix you need to run
 ```
 $ mpirun -np NUMBER_OF_CORES python distortion.py --gpu
 ```
-cpu version is not implemented.
+cpu version is not implemented. In the case that you are using more than one data.npy file where you stored the deltas, you need to compute the distortion with the following command instead:
+
+```
+$ mpirun -np NUMBER_OF_CORES python distortion_multiple_data.py --gpu
+```
 
 Finally, to plot the results you can use the Jupyter notebook `two_point_analysis.ipynb`
 
