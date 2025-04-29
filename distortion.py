@@ -6,11 +6,11 @@ import argparse
 import glob
 import os
 import time
+from mpi4py import MPI
 
 from parameters import *
 from forest_class import quasar
-
-from mpi4py import MPI
+import distortion_procedures_pycuda as distortion
 
 
 if __name__ == '__main__':
@@ -36,12 +36,6 @@ if __name__ == '__main__':
         parser.add_argument('--excluded', default = 0.95, required = False,
             help = 'Fraction of forests pairs excluded from the computation.')
 
-        group2 = parser.add_mutually_exclusive_group(required=True)
-        group2.add_argument('--cpu',action='store_true',required=False,
-            help = 'Uses the CPU for the main computations.')
-        group2.add_argument('--gpu',action='store_true',required=False,
-            help = 'Uses the GPU for the main computations..')
-
         parser.add_argument('--verbose', action = 'store_true', required = False,
             help = 'Show statistics of computation time. Only computes the distortion matrix for a few forests.')
 
@@ -55,11 +49,6 @@ if __name__ == '__main__':
     data = np.load(data_dir + 'data1.npy', allow_pickle=True).item()
 
     # Moving data dict to the correlation_procedures module
-    if args.cpu:
-        raise SystemExit('CPU version not implemented yet')
-        import distortion_procedures_cpu as distortion
-    else:
-        import distortion_procedures_pycuda as distortion
 
     name_partials = 'distortion_pixel_'
 
