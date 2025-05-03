@@ -70,10 +70,6 @@ Finally, to plot the results you can use the Jupyter notebook `two_point_analysi
 
 ## Machine configuration
 
-If you are running the code in a machine with distributed memory and you get mpi bradcast errors, set `distributed_memory`
-to `True` in `parameters.py`. Unfortunately it has the possible side effect to multiply your memory usage, because it copies the
- `data` dictionary to each of the different threads.
-
 If you have several GPU's set `number_of_cuda_devices` equal to the number of devices per node. Also edit `cuda_device_first_number`
 in case you need to left free the first cuda devices in your machine.
 

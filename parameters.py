@@ -4,18 +4,14 @@
 import numpy as np
 
 # IO parammeters
-data_dir = './deltas_lya2pcf/'
-corr_dir = './outputs/test/'
+data_dir = '/pscratch/sd/j/joselotl/lyadata/'
+corr_dir = '/pscratch/sd/j/joselotl/lyadata/outputs/'
 
 
 
 # Size and number of pixels of correlation outputs
 bin_size_r = 4 #Mpc/h
 rmax = 200  #Mpc/h
-
-# Name of the keyword for the deltas in the .fit.gz files
-#delta_key = "DELTA" #Use this for eBOSS, DESI EDR and DESIY5 mocks
-delta_key = "DELTA_BLIND" #Use this for DESI DR1 onwards
 
 # For the two point
 rpmax = rmax #Mpc/h
@@ -59,12 +55,10 @@ threads_per_block = (8, 32, 4)
 threads_per_block_2 = (32, 32, 1)
 max_threads = 1024
 
-max_lenght = np.int32(208)
+max_lenght = np.int32(917)
 
 number_of_neighs = 80
 
-# Set to true to fix broadcast errors
-distributed_memory = False
 # If using a machine with several cuda devices
-number_of_cuda_devices = 1
+number_of_cuda_devices = 4
 cuda_device_first_number = 0

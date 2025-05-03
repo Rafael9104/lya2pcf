@@ -20,6 +20,7 @@ if __name__ == '__main__':
     mpi_size = comm.Get_size()
     cuda_device = str(int(mpi_rank%number_of_cuda_devices + cuda_device_first_number))
     os.environ['CUDA_DEVICE'] = cuda_device
+    print('worker'+str(mpi_rank)+'will be using gpu number' +cuda_device)
 
     # Writing log files, one per mpi process
     if not os.path.exists(corr_dir):
@@ -47,8 +48,9 @@ if __name__ == '__main__':
         if args.verbose:
             kwargs['performance'] = True
 
-        print('Loading extracted file.')
-        data = np.load(data_dir + 'data1.npy', allow_pickle=True).item()
+    print('Loading extracted file.')
+    data = np.load(data_dir + 'data1.npy', allow_pickle=True).item()
+    if mpi_rank == 0:
 
 
         ####################################################################
@@ -84,36 +86,13 @@ if __name__ == '__main__':
         # Dividing the total number of pixels between the available mpi kernels
         pixels_partial = np.array_split(pixels_total, mpi_size)
 
-        if distributed_memory:
-
-            # ALL: The data dictionary is too big to be broadcasted to other nodes as a single object
-            # this is a dirty solution
-
-            chunks = 2
-            pixels_for_broadcast = np.array_split(pixels_total, chunks)
-            data_for_broadcast_0 = {key: data[key] for key in pixels_for_broadcast[0]}
-            data_for_broadcast_1 = {key: data[key] for key in pixels_for_broadcast[1]}
-
     else:
         angmax = None
         pixels_partial = None
         pixels_total = None
-        data = None
         args = None
         kwargs = None
         shape_hist = None
-        if distributed_memory:
-            data_for_broadcast_0 = None
-            data_for_broadcast_1 = None
-
-
-    # Moving the relevant data to the other nodes
-    if distributed_memory:
-        data_for_broadcast_0 = comm.bcast(data_for_broadcast_0, root = 0)
-        data_for_broadcast_1 = comm.bcast(data_for_broadcast_1, root = 0)
-        data = {**data_for_broadcast_0, **data_for_broadcast_1}
-    else:
-        data = comm.bcast(data, root = 0)
 
     pixels_total = comm.bcast(pixels_total, root = 0)
     args = comm.bcast(args, root = 0)
