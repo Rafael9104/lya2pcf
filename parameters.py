@@ -4,8 +4,8 @@
 import numpy as np
 
 # IO parammeters
-data_dir = '/pscratch/sd/j/joselotl/lyadata/'
-corr_dir = '/pscratch/sd/j/joselotl/lyadata/outputs/'
+data_dir = './deltas_lya2pcf/'
+corr_dir = './outputs/test/'
 
 
 
