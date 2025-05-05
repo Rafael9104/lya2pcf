@@ -7,7 +7,8 @@ import numpy as np
 data_dir = './deltas_lya2pcf/'
 corr_dir = './outputs/test/'
 
-
+# Name of the keyword for the deltas in the .fit.gz files
+delta_key = "DELTA" #Use this for eBOSS, DESI EDR and DESIY5 mocks
 
 # Size and number of pixels of correlation outputs
 bin_size_r = 4 #Mpc/h
