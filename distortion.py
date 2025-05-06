@@ -29,21 +29,20 @@ if __name__ == '__main__':
     log_file = open(log_filename,"w+")
 
     # global data
-    if mpi_rank == 0:
-        parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description='Takes the data.npy file and computes the distortion matrix of the two point correlation funcion.')
 
-        parser.add_argument('--excluded', default = 0.95, required = False,
+    parser.add_argument('--excluded', default = 0.95, required = False,
             help = 'Fraction of forests pairs excluded from the computation.')
 
-        parser.add_argument('--verbose', action = 'store_true', required = False,
+    parser.add_argument('--verbose', action = 'store_true', required = False,
             help = 'Show statistics of computation time. Only computes the distortion matrix for a few forests.')
 
-        args = parser.parse_args()
+    args = parser.parse_args()
 
-        kwargs = {}
-        if args.verbose:
-            kwargs['performance'] = True
+    kwargs = {}
+    if args.verbose:
+        kwargs['performance'] = True
 
     print('Loading extracted file.')
     data = np.load(data_dir + 'data1.npy', allow_pickle=True).item()

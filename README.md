@@ -56,12 +56,12 @@ It will produce the files `correlation.npy`, `error.npy`, and for the two point 
 
 To compute the distortion matrix you need to run
 ```
-$ mpirun -np NUMBER_OF_CORES python distortion.py --gpu
+$ mpirun -np NUMBER_OF_CORES python distortion.py
 ```
 cpu version is not implemented. In the case that you are using more than one `data#.npy` file where you stored the deltas, you need to compute the distortion with the following command instead:
 
 ```
-$ mpirun -np NUMBER_OF_CORES python distortion_multiple_data.py --gpu
+$ mpirun -np NUMBER_OF_CORES python distortion_multiple_data.py
 ```
 
 Finally, to plot the results you can use the Jupyter notebook `two_point_analysis.ipynb`

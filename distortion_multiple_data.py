@@ -29,26 +29,19 @@ if __name__ == '__main__':
     log_file = open(log_filename,"w+")
 
     # global data
-    if mpi_rank == 0:
-        parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
             description='Takes the data.npy file and computes the distortion matrix of the two point correlation funcion.')
 
-        parser.add_argument('--excluded', default = 0.95, required = False,
+    parser.add_argument('--excluded', default = 0.95, required = False,
             help = 'Fraction of forests pairs excluded from the computation.')
 
-        group2 = parser.add_mutually_exclusive_group(required=True)
-        group2.add_argument('--cpu',action='store_true',required=False,
-            help = 'Uses the CPU for the main computations.')
-        group2.add_argument('--gpu',action='store_true',required=False,
-            help = 'Uses the GPU for the main computations..')
-
-        parser.add_argument('--verbose', action = 'store_true', required = False,
+    parser.add_argument('--verbose', action = 'store_true', required = False,
             help = 'Show statistics of computation time. Only computes the distortion matrix for a few forests.')
 
-        args = parser.parse_args()
+    args = parser.parse_args()
 
-        kwargs = {}
-        if args.verbose:
+    kwargs = {}
+    if args.verbose:
             kwargs['performance'] = True
 
     # global data
@@ -60,11 +53,7 @@ if __name__ == '__main__':
     directory_split = comm.scatter(directory_split, root = 0)
 
     # Moving data dict to the correlation_procedures module
-    if args.cpu:
-        raise SystemExit('CPU version not implemented yet')
-        import distortion_procedures_cpu as distortion
-    else:
-        import distortion_procedures_pycuda as distortion
+    import distortion_procedures_pycuda as distortion
 
     name_partials = 'distortion_pixel_'
 
