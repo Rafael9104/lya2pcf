@@ -49,10 +49,6 @@ if __name__ == '__main__':
 
     # Moving data dict to the correlation_procedures module
 
-    name_partials = 'distortion_pixel_'
-
-    log_file.flush()
-
     shape_hist = (numpix_rp, numpix_rt)
     total_bins = np.prod(shape_hist)
     disto = np.zeros((total_bins,total_bins))
@@ -60,8 +56,8 @@ if __name__ == '__main__':
 
     pixels_total=np.array(list(data.keys()))
     lpix = len(pixels_total)
-    print('Number of non-empty healpix pixels:', lpix)
-    log_file.write('\nNumber of non-empty healpix pixels: ' + str(lpix))
+    print('Total number of non-empty healpix pixels:', lpix)
+    log_file.write('\nTotal number of non-empty healpix pixels: ' + str(lpix))
 
     print('Computing partial histograms for each pixel.')
 
@@ -71,6 +67,10 @@ if __name__ == '__main__':
 
     print("The process number:", mpi_rank, "is going to compute the following pixels:", pixels_list)
     print('Computing the maximum angle that we are interested in.')
+    num_pixels_partial = len(pixels_list)
+    log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
+        str(pixels_list[0]) + ' to ' + str(pixels_list[-1]))
+
     log_file.write('\nComputing the maximum angle that we are interested in.')
 
     dminlist=[]
@@ -91,23 +91,11 @@ if __name__ == '__main__':
 
     distortion.init(data, log_file, shape_hist, angmax, float(args.excluded))
 
-    num_pixels_partial = len(pixels_list)
-
-    lpix = len(pixels_list)
-    print('Number of non-empty healpix pixels:', lpix)
-    log_file.write('\nNumber of non-empty healpix pixels: ' + str(lpix))
-
-    print('Computing partial histograms for each pixel.')
-
-    # Dividing the total number of pixels between the available mpi kernels
-    pixels_partial = np.array_split(pixels_list, mpi_size)
-    log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
-        str(pixels_list[0]) + ' to ' + str(pixels_list[-1]))
-
 
     ###############################################################################
     # This is the core of the program, where the distortion matrix is computed    #
     ###############################################################################
+    print('Computing partial histograms for each pixel.')
 
     pixel_counter = 0
     for pixel in pixels_list:

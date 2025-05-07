@@ -204,8 +204,6 @@ def distortion_per_pixel(forest_list, **kargs):
     cuda.memset_d32_async(dist_hist_d, 0, int(np.prod(dist_hist.shape)))
     weight_B_d.fill(0)
 
-    print('new pixel with', len(forest_list))
-
     for forest1 in forest_list[:]:
         # Preparing the data structure for the auxiliar histograms
         cuda.memset_d32_async(etas12,0,int(np.prod(le1.shape)))
