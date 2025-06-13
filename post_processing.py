@@ -7,6 +7,7 @@ import argparse
 import numpy as np
 from parameters import *
 from numba.core.decorators import jit
+import fitsio
 
 @jit(nopython=True, nogil=True)
 def bin_coordinates(numpix_r_p, numpix_r_t):
@@ -121,6 +122,7 @@ if __name__ == '__main__':
     # Name of the outputs
     cor_name_file = 'correlation_2d'
     error_name_file = 'error_2d'
+    fits_name_file = "correlation.out.gz"
 
 
     print('Looking for histogram files in ' + corr_dir)
@@ -168,14 +170,43 @@ if __name__ == '__main__':
 
     # The following coordinates correspond to the center of the bins. They are not the
     # weighted averages because we don't have enough computer power to compute them
-    if args.write_coordinates:
-        print('Writing the coordinates. They are not necessary, but might be useful if you are doing your own analysis.')
-        rp = correlation.copy()
-        rt = correlation.copy()
-        for i in range(numpix_rp):
+
+        
+    rp = correlation.copy()
+    rt = correlation.copy()
+    for i in range(numpix_rp):
             for j in range(numpix_rt):
                 rp[i,j]=(i + 0.5)*rpmax / numpix_rp
                 rt[i,j]=(j + 0.5)*rtmax / numpix_rt
+    if args.write_coordinates:
+        print('Writing the coordinates. They are not necessary, but might be useful if you are doing your own analysis.')
         np.save(corr_dir + 'rp', rp)
         np.save(corr_dir + 'rt', rt)
+        
+    fits_file = fitsio.FITS(corr_dir + fits_name_file, 'rw')
+    
+    n_rows = numpix_rp * numpix_rt
+    matrix_type = str(int(n_rows))+"D"
+    dtype=[('DA', 'f8'), ('RP', 'f8'), ('RT', 'f8'), ('CO',matrix_type), ('DM',matrix_type)]	
+    table_data = np.zeros(n_rows, dtype=dtype)
+    table_data['DA'] = correlation.flatten()
+    table_data['RP'] = rp.flatten()
+    table_data['RT'] = rt.flatten()
+    table_data['CO'] = covariance
+    distortion = np.load(corr_dir + "distortion.npy")
+    table_data['DM'] = distortion
+    
+    header = {
+    'RPMIN': 0,
+    'RPMAX': rpmax,
+    'RTMAX': rtmax,
+    'NP': numpix_rp,
+    'NT': numpix_rt,
+    'OMEGAM': Omm,
+    'OMEGAR': 0,
+    'OMEGAK': 0,
+    'WL': -1}
+
+    fits_file.write(table_data, extname='COR', header = header)
+    fits_file.close
  
