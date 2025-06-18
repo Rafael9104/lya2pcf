@@ -46,27 +46,23 @@ If you are using more than one `data#.npy` file where you stored the deltas, you
 ```
 $ mpirun -np NUMBER_OF_CORES python 2pla_multiple_data.py (--cpu | --gpu)
 ```
-
-Now that the hardest part has finished, you just need to compute the correlation function and its error with
-```
-$ python post_processing.py
-```
-It will produce the files `correlation.npy`, `error.npy`, and for the two point correlation the `covariance.npy` in the directory
-`corr_dir`.
-
 To compute the distortion matrix you need to run
 ```
 $ mpirun -np NUMBER_OF_CORES python distortion.py
 ```
-cpu version is not implemented. In the case that you are using more than one `data#.npy` file where you stored the deltas, you need to compute the distortion with the following command instead:
+it will produce the file `distortion.npy` in the directory `corr_dir`. CPU version is not implemented. In the case that you are using more than one `data#.npy` file where you stored the deltas, you need to compute the distortion with the following command instead:
 
 ```
 $ mpirun -np NUMBER_OF_CORES python distortion_multiple_data.py
 ```
 
+Now that the hardest part has finished, you just need to compute the correlation function and its error with
+```
+$ python post_processing.py
+```
+It will produce the files `correlation.npy`, `error.npy`, and for the two point correlation the `covariance.npy`. These files together with `distortion.npy` are stored in the file `correlation.out.gz` file in the directory `corr_dir` with the same format that produce PICCA.
+
 Finally, to plot the results you can use the Jupyter notebook `two_point_analysis.ipynb`
-
-
 
 ## Machine configuration
 
