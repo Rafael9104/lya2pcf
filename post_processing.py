@@ -8,6 +8,7 @@ import numpy as np
 from parameters import *
 from numba.core.decorators import jit
 import fitsio
+import warnings
 
 @jit(nopython=True, nogil=True)
 def bin_coordinates(numpix_r_p, numpix_r_t):
@@ -33,7 +34,7 @@ def cov(xi, weight):
 
     means_l = list()
     for i in range(len(xi[0])):
-        mean_auxiliar = np.sum(xi_weight[:,i]) / np.sum(weight[:,i])
+        mean_auxiliar = np.sum(xi_weight[:,i]) /  np.sum(weight[:,i])
         means_l.append(mean_auxiliar)
     means = np.array(means_l)
 
@@ -182,6 +183,12 @@ if __name__ == '__main__':
         print('Writing the coordinates. They are not necessary, but might be useful if you are doing your own analysis.')
         np.save(corr_dir + 'rp', rp)
         np.save(corr_dir + 'rt', rt)
+    
+    try:
+        distortion = np.load(corr_dir + "distortion.npy")
+    except:
+        warnings.warn('No distortion.npy found. Compute it first if you want to obtain a fits.gz file with all the outputs.')
+        quit()
         
     fits_file = fitsio.FITS(corr_dir + fits_name_file, 'rw')
     
@@ -193,7 +200,6 @@ if __name__ == '__main__':
     table_data['RP'] = rp.flatten()
     table_data['RT'] = rt.flatten()
     table_data['CO'] = covariance
-    distortion = np.load(corr_dir + "distortion.npy")
     table_data['DM'] = distortion
     
     header = {

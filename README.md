@@ -60,7 +60,7 @@ Now that the hardest part has finished, you just need to compute the correlation
 ```
 $ python post_processing.py
 ```
-It will produce the files `correlation.npy`, `error.npy`, and for the two point correlation the `covariance.npy`. These files together with `distortion.npy` are stored in the file `correlation.out.gz` file in the directory `corr_dir` with the same format that produce PICCA.
+It will produce the files `correlation.npy`, `error.npy`, and for the two point correlation the `covariance.npy`. These files together with `distortion.npy` are stored in the file `correlation.out.gz` file in the directory `corr_dir` that can be used with the fitter [Vega](https://github.com/andreicuceu/vega).
 
 Finally, to plot the results you can use the Jupyter notebook `two_point_analysis.ipynb`
 
