@@ -72,7 +72,7 @@ if not os.path.exists(args.data_dir):
 data = {}
 directory = glob.glob(args.delta_dir + '/*.fits.gz')
 if len(directory) == 0:
-    print('No delta files in directory ' + delta_dir)
+    print('No delta files in directory ' + args.delta_dir)
 
 pool = Pool()
 data_list = pool.map(record_from_deltas, directory)
