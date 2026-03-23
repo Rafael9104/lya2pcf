@@ -23,8 +23,8 @@ if __name__ == '__main__':
     print('worker'+str(mpi_rank)+'will be using gpu number' +cuda_device)
 
     # Writing log files, one per mpi process
-    if not os.path.exists(corr_dir):
-        os.makedirs(corr_dir)
+    #if not os.path.exists(corr_dir):
+    os.makedirs(corr_dir, exist_ok=True)
     log_filename = corr_dir + 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '.log'
     log_file = open(log_filename,"w+")
 
