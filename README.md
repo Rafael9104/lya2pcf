@@ -19,7 +19,7 @@ $ conda install --yes --file requirements.txt
 ```
 Currently, latest version of healpy is not in conda, therefore you need to install it with pip
 ```
-pip install --force-reinstall healpy numpy==1.24
+pip install --force-reinstall healpy numpy==1.26.4
 ```
  
 ## Usage
