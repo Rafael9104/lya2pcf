@@ -1,6 +1,7 @@
 import numpy as np
 import time
 import parameters as params
+import gpu_support
 
 import pycuda.driver as cuda
 import pycuda.autoinit
@@ -8,8 +9,12 @@ import pycuda.gpuarray as gpuarray
 from pycuda.compiler import SourceModule
 
 
+# The kernel's precision and the dtype of the buffers we upload to it have to
+# agree, so both come from the same setting.
+myfloat = params.gpu_dtype
+gpu_support.check_precision_supported()
 with open('cuda_kernels.cpp') as f:
-  mod = SourceModule(f.read())
+  mod = SourceModule(f.read(), options=['-DMYFLOAT=' + params.gpu_ctype])
 
 pair_correlation = mod.get_function("pair_correlation")
 
@@ -49,11 +54,6 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     shape_hist = shape_hist_aux
     angmax = angmax_aux
 
-    #setting alias
-    global myfloat
-    # In order to change fron 64 to 32 bits, change this lines as well as the appropiate lines in cuda_kernels.cpp
-    myfloat = np.float64
-
     if not pixel_list:
         pixel_list = list(data.keys())
 
@@ -70,6 +70,23 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     # The kernel takes this as an int argument, which pycuda can only marshal
     # from a fixed-width type, not a plain Python int.
     max_lenght = np.int32(max_lenght)
+
+    # Checked before the host arrays are built, not just before the uploads:
+    # these buffers are the same size on both sides, so on a large dataset
+    # allocating and filling them first would exhaust host memory before the
+    # GPU was ever asked for anything.
+    itemsize = np.dtype(myfloat).itemsize
+    forest_bytes = count_forests * int(max_lenght) * itemsize
+    gpu_support.require_memory(
+        6 * forest_bytes                                  # dc, rx, ry, rz, we, dw
+        + 3 * count_forests * itemsize                    # x, y, z
+        + 2 * int(np.prod(shape_hist)) * itemsize,        # w_hist, dw_hist
+        "forest data (%d forests, longest %d pixels)" % (count_forests, max_lenght),
+        ["split the deltas into more files with delta_reader.py "
+         "--split-number and run 2pla_multiple_data.py, which uploads one "
+         "file at a time",
+         "coadd/rebin the deltas upstream, which shortens every forest",
+         "run on more GPUs: each MPI rank takes a share of the pixels"])
 
     gran_dc = np.zeros((count_forests * max_lenght), dtype = myfloat)
     gran_rx = np.zeros((count_forests * max_lenght), dtype = myfloat)

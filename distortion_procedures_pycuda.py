@@ -2,6 +2,7 @@ import numpy as np
 import random
 import time
 import parameters as params
+import gpu_support
 
 import pycuda.driver as cuda
 import pycuda.autoinit
@@ -9,8 +10,9 @@ import pycuda.gpuarray as gpuarray
 from pycuda.compiler import SourceModule
 
 random.seed(1)
+gpu_support.check_precision_supported()
 with open('cuda_kernels.cpp') as f:
-  mod = SourceModule(f.read())
+  mod = SourceModule(f.read(), options=['-DMYFLOAT=' + params.gpu_ctype])
 precompute_distances = mod.get_function("precompute_distances")
 compute_etas = mod.get_function("compute_etas")
 compute_d = mod.get_function("compute_d")
@@ -79,19 +81,45 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     # from a fixed-width type, not a plain Python int.
     max_lenght = np.int32(max_lenght)
 
-    gran_dc = np.zeros((count_forests * max_lenght), dtype = np.float32)
-    gran_rx = np.zeros((count_forests * max_lenght), dtype = np.float32)
-    gran_ry = np.zeros((count_forests * max_lenght), dtype = np.float32)
-    gran_rz = np.zeros((count_forests * max_lenght), dtype = np.float32)
-    gran_we = np.zeros((count_forests * max_lenght), dtype = np.float32)
-    gran_dw = np.zeros((count_forests * max_lenght), dtype = np.float32)
-    gran_x = np.zeros(count_forests, dtype = np.float32)
-    gran_y = np.zeros(count_forests, dtype = np.float32)
-    gran_z = np.zeros(count_forests, dtype = np.float32)
-    gran_odl2 = np.zeros(count_forests, dtype = np.float32)
-    gran_dl = np.zeros((count_forests * max_lenght), dtype = np.float32)
-    gran_omega = np.zeros(count_forests, dtype = np.float32)
-    weight_B = np.zeros(total_bins, dtype = np.float32)
+    # Checked before the host arrays are built, not just before the uploads:
+    # the forest buffers are the same size on both sides, so on a large
+    # dataset allocating and filling them first would exhaust host memory
+    # before the GPU was ever asked for anything. int() guards against the
+    # int32 max_lenght overflowing these products.
+    itemsize = np.dtype(params.gpu_dtype).itemsize
+    ml, neighs, bins = int(max_lenght), params.number_of_neighs, int(total_bins)
+    forest_bytes = count_forests * ml * itemsize
+    gpu_support.require_memory(
+        7 * forest_bytes                             # dc, rx, ry, rz, we, dw, dl
+        + 5 * count_forests * itemsize               # x, y, z, odl2, omega
+        + bins * itemsize                            # weight_B
+        + bins * bins * itemsize                     # dist_hist
+        + 4 * bins * ml * neighs * itemsize          # etas12/21/13/31
+        + 4 * bins * neighs * itemsize               # etas22/23/32/33
+        + bins * neighs + bins * neighs * 4          # activeBs + index
+        + neighs * 4                                 # index_j
+        + 4 * ml * ml * neighs * itemsize            # x12/y12/z12/r12
+        + 2 * ml * ml * neighs * 4,                  # bin_rp/bin_rt
+        "distortion buffers (longest forest %d pixels, %d neighbours, %d bins)"
+        % (ml, neighs, bins),
+        ["coadd/rebin the deltas upstream: the x12/y12/z12/r12 buffers scale "
+         "as the square of the forest length, so coadding by 3 saves about 4x",
+         "lower 'number_of_neighs' in parameters.yml, which scales most buffers",
+         "use coarser binning (larger bin_size_r, or smaller rmax)"])
+
+    gran_dc = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+    gran_rx = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+    gran_ry = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+    gran_rz = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+    gran_we = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+    gran_dw = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+    gran_x = np.zeros(count_forests, dtype = params.gpu_dtype)
+    gran_y = np.zeros(count_forests, dtype = params.gpu_dtype)
+    gran_z = np.zeros(count_forests, dtype = params.gpu_dtype)
+    gran_odl2 = np.zeros(count_forests, dtype = params.gpu_dtype)
+    gran_dl = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+    gran_omega = np.zeros(count_forests, dtype = params.gpu_dtype)
+    weight_B = np.zeros(total_bins, dtype = params.gpu_dtype)
     count = int(0)
     for pixel in pixel_list:
         for forest in data[pixel]:
@@ -171,17 +199,16 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     global binner_d
 
 
-    ldist = np.empty((total_bins,total_bins), dtype = np.float32).nbytes
+    ldist = np.empty((total_bins,total_bins), dtype = params.gpu_dtype).nbytes
     dist_hist_d = cuda.mem_alloc(ldist)
 
-    onefloat = np.empty(1, dtype = np.float32).nbytes
-    binner_d = gpuarray.to_gpu(np.array([params.numpix_rp / params.rmax, params.numpix_rt / params.rmax], dtype = np.float32))
+    binner_d = gpuarray.to_gpu(np.array([params.numpix_rp / params.rmax, params.numpix_rt / params.rmax], dtype = params.gpu_dtype))
 
 
-    le1 = np.empty(shape_hist + (max_lenght,params.number_of_neighs), dtype = np.float32)
-    le2 = np.empty(shape_hist + (params.number_of_neighs,), dtype = np.float32)
+    le1 = np.empty(shape_hist + (max_lenght,params.number_of_neighs), dtype = params.gpu_dtype)
+    le2 = np.empty(shape_hist + (params.number_of_neighs,), dtype = params.gpu_dtype)
     le3 = np.zeros(shape_hist + (params.number_of_neighs,), dtype = np.bool_).nbytes
-    le4 = np.empty((params.number_of_neighs,), dtype = np.float32)
+    le4 = np.empty((params.number_of_neighs,), dtype = np.int32)
 
     etas12 = cuda.mem_alloc(le1.nbytes)
     etas21 = cuda.mem_alloc(le1.nbytes)
@@ -195,7 +222,7 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     activeBs_index = gpuarray.zeros(shape_hist + (params.number_of_neighs,), dtype = np.int32)
     index_j = cuda.mem_alloc(le4.nbytes)
 
-    size_auxiliars_real = np.empty((max_lenght, max_lenght, params.number_of_neighs), dtype = np.float32).nbytes
+    size_auxiliars_real = np.empty((max_lenght, max_lenght, params.number_of_neighs), dtype = params.gpu_dtype).nbytes
     size_auxiliars_int = np.empty((max_lenght, max_lenght, params.number_of_neighs), dtype = np.int32).nbytes
     x12 = cuda.mem_alloc(size_auxiliars_real)
     y12 = cuda.mem_alloc(size_auxiliars_real)
@@ -210,22 +237,22 @@ def distortion_per_pixel(forest_list, **kargs):
     """
 
     # Preparing data structure for the partial histograms
-    dist_hist = np.empty((total_bins, total_bins), dtype = np.float32)
+    dist_hist = np.empty((total_bins, total_bins), dtype = params.gpu_dtype)
 
-    cuda.memset_d32_async(dist_hist_d, 0, int(np.prod(dist_hist.shape)))
+    cuda.memset_d8_async(dist_hist_d, 0, dist_hist.nbytes)
     weight_B_d.fill(0)
 
     for forest1 in forest_list[:]:
         # Preparing the data structure for the auxiliar histograms
-        cuda.memset_d32_async(etas12,0,int(np.prod(le1.shape)))
-        cuda.memset_d32_async(etas13,0,int(np.prod(le1.shape)))
-        cuda.memset_d32_async(etas21,0,int(np.prod(le1.shape)))
-        cuda.memset_d32_async(etas31,0,int(np.prod(le1.shape)))
-        cuda.memset_d32_async(etas22,0,int(np.prod(le2.shape)))
-        cuda.memset_d32_async(etas23,0,int(np.prod(le2.shape)))
-        cuda.memset_d32_async(etas32,0,int(np.prod(le2.shape)))
-        cuda.memset_d32_async(etas33,0,int(np.prod(le2.shape)))
-        cuda.memset_d32_async(index_j,0,int(np.prod(le4.shape)))
+        cuda.memset_d8_async(etas12, 0, le1.nbytes)
+        cuda.memset_d8_async(etas13, 0, le1.nbytes)
+        cuda.memset_d8_async(etas21, 0, le1.nbytes)
+        cuda.memset_d8_async(etas31, 0, le1.nbytes)
+        cuda.memset_d8_async(etas22, 0, le2.nbytes)
+        cuda.memset_d8_async(etas23, 0, le2.nbytes)
+        cuda.memset_d8_async(etas32, 0, le2.nbytes)
+        cuda.memset_d8_async(etas33, 0, le2.nbytes)
+        cuda.memset_d8_async(index_j, 0, le4.nbytes)
         forest1_lenght = len(forest1.dc)
         # Looking for neighbors
         neighbors_full = forest1.neighborhood(data, angmax)
