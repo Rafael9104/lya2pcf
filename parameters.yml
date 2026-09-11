@@ -41,8 +41,15 @@ nz: 10000
 
 # Precision of the two-point correlation CUDA kernel and the device buffers it
 # reads: float32 or float64. Affects the GPU only — forest data on the CPU is
-# always float64, and it is converted on upload. The distortion kernels are
-# always float32 (they are written with fixed float types).
+# always float64, and it is converted on upload.
+#
+# This does NOT affect the distortion matrix, which is always float32: its
+# kernels are written with fixed float types, and its buffers are far larger
+# (~4.9 GB at float32 for 0.8 Angstrom deltas, ~9.2 GB at float64), so making
+# it configurable is separate work that needs a memory story first. Note that
+# footprint depends strongly on the delta binning — coadding the deltas by 3
+# upstream cuts it about 4x, since some buffers scale as max_lenght squared.
+# See IMPROVEMENTS.md #10.
 #
 # float64 requires a GPU with compute capability >= 6.0 (Pascal or newer),
 # because atomicAdd on double does not exist on older cards; on those the
