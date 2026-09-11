@@ -80,9 +80,14 @@ def record_from_deltas(file):
     deltafile = fitsio.FITS(file)
     check_keys(deltafile, file)
     numberofforests,numberoflambdas = deltafile[keys['delta']].get_dims()
-    # Read once per file rather than once per forest.
+    # Each extension is read once per file and then indexed in memory. Reading
+    # row by row instead costs a separate cfitsio call per forest, and the
+    # deltas were being read twice over. The cost is holding one file's deltas
+    # and weights per worker process while it runs.
     metadata = deltafile[keys['metadata']][:]
     lambd_list = deltafile[keys['lambda']][:]
+    deltas = deltafile[keys['delta']].read()
+    weights = deltafile[keys['weight']].read()
     for i in range(numberofforests):
         forest_data = quasar(metadata[keys['los_id']][i],
             metadata[keys['los_id']][i],
@@ -90,16 +95,14 @@ def record_from_deltas(file):
             metadata[keys['ra']][i],
             metadata[keys['dec']][i],
             numberoflambdas)
-        delta1 = deltafile[keys['delta']][i,:][0]
-        mask = np.isfinite(delta1)
+        delta_row = deltas[i]
+        mask = np.isfinite(delta_row)
         lambd = lambd_list[mask]
         z = lambd/params.lambdaa - 1
         loglam = np.log10(lambd)
         correctionfactor=np.power((z + 1.)/(1. + params.z_ref), params.gammaovertwo)
-        weight_list = deltafile[keys['weight']][i,:][0]
-        forest_data.we = weight_list[mask] * correctionfactor
-        delta_list = deltafile[keys['delta']][i,:][0]
-        forest_data.fill_dw(delta_list[mask], loglam, True)
+        forest_data.we = weights[i][mask] * correctionfactor
+        forest_data.fill_dw(delta_row[mask], loglam, True)
         #forest_data.dw = forest.data['WEIGHT']*forest.data['DELTA']*correctionfactor
         
         comov_distance = cosmology.dc_interpol(z)
@@ -118,6 +121,10 @@ parser.add_argument('--data-dir', type=str, default = params.data_dir,
     help = 'Directory where the data will be stored.')
 parser.add_argument('--split-number', type=int, default = 1,
     help = 'Number of files to split the data.')
+parser.add_argument('--statistics', action = 'store_true', required = False,
+    help = 'Write the sizes and neighbors diagnostic files to the data '
+           'directory. Counting neighbours needs a full neighbour search, '
+           'which is a large part of the runtime.')
 args = parser.parse_args()
 
 if os.path.exists(args.data_dir):
@@ -168,19 +175,18 @@ list_of_pixels = list(data.keys())
 list_of_pixels.sort()
 
 
-# Here we will search for the neighbors of each forest
-neighbors = []
-for pix in list_of_pixels:
-    for forest in data[pix]:
-        min_distance = forest.dc[0]
-        angmax = 2*np.arcsin(0.5*params.rtmax/min_distance)
-        neigh_names, neigh_pixels = forest.neighborhood_names(data,angmax)
-        forest.neigh_names = neigh_names
-        forest.neigh_pixels = neigh_pixels
-        number_neighs = len(neigh_names)
-        neighbors.append(number_neighs)
-np.savetxt("sizes", sizes)
-np.savetxt("neighbors", neighbors)
+# The neighbour search is only needed for these diagnostics: the correlation
+# and distortion both call forest.neighborhood() and recompute from scratch.
+# It is a large part of the runtime, so it is off unless asked for.
+if args.statistics:
+    neighbors = []
+    for pix in list_of_pixels:
+        for forest in data[pix]:
+            forest_angmax = 2*np.arcsin(0.5*params.rtmax/forest.dc[0])
+            neigh_names, _ = forest.neighborhood_names(data, forest_angmax)
+            neighbors.append(len(neigh_names))
+    np.savetxt(os.path.join(args.data_dir, "sizes"), sizes)
+    np.savetxt(os.path.join(args.data_dir, "neighbors"), neighbors)
 
 pixels_partial = np.array_split(list_of_pixels, args.split_number)
 i=1
