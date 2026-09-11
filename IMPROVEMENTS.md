@@ -660,6 +660,98 @@ recover that too.
 fundamental problem: as long as the file holds pickled Python objects,
 saving is slow and memory-hungry.
 
+## 15. Merge the `*_multiple_data` drivers, and add a buffer zone so no pair is missed
+
+There are four near-duplicate drivers — `2pla.py` /
+`2pla_multiple_data.py` and `distortion.py` /
+`distortion_multiple_data.py`, 526 lines between them — and the
+multiple-data variants are the ones that will be used going forward,
+since a full dataset does not fit in one file.
+
+They are not just copies. They parallelise on different axes:
+
+| | `2pla.py` | `2pla_multiple_data.py` |
+|---|---|---|
+| MPI splits | **pixels** across ranks | **files** across ranks |
+| data per rank | the whole dataset | only that rank's files |
+| neighbours visible | all of them | only those in the same file |
+
+**That last row is a correctness difference, not an implementation
+detail.** `two_point_per_pixel` finds neighbours with
+`forest1.neighborhood(data, angmax)`, which searches only the `data`
+dict it was given. In the multiple-data driver that is one file, so any
+pair whose two forests landed in different `data*.npy` files is never
+counted. `delta_reader.py --split-number` splits a sorted pixel list
+into contiguous chunks, so the loss happens along the boundaries between
+chunks. Confirmed as known and intended for a later fix.
+
+**Measured 2026-09-11**, DR1 set, the same 16 healpix pixels either way:
+
+```
+one file   (2pla.py style)            w_hist total  16,756,279,121
+four files (multiple_data style)      w_hist total  12,721,548,931
+                                      -> 24.08% of pair weight lost
+```
+
+Read that as an order of magnitude rather than a universal figure: with
+only 16 pixels in 4 chunks the boundaries are a large share of the
+volume, and a real dataset has far more pixels per file, so the fraction
+falls. But it rises again with `--split-number`, which a 40 GB run needs
+a lot of — the loss tracks the surface-to-volume ratio of the chunks.
+
+Note also that the lost pairs are **not a random subset**: pairs
+straddling a boundary are preferentially the widely separated ones, so
+the effect concentrates in the large-separation bins. Whether that
+biases xi = dw/w or mainly inflates its errors was not tested — a
+uniform loss would largely cancel in the ratio, a separation-dependent
+one need not. Worth measuring on xi directly before drawing any
+conclusion about the science impact.
+
+**The planned fix is a buffer (halo) zone**: each file also carries the
+neighbouring forests just outside its own pixels, so every forest it
+owns can see all of its neighbours.
+
+**The double-counting problem this raises is already solved by the
+existing ordering rule.** `forest_class.py:96` counts a pair only when
+
+```python
+mu > mumin and self.name != forest2.name and self.ra < forest2.ra
+```
+
+so an unordered pair {A, B} has exactly one valid base forest: whichever
+has the smaller RA. Given that, a buffer scheme is consistent provided:
+
+- the outer loop uses only the file's **own** forests as `forest1`,
+  never buffer forests; and
+- the buffer contains every neighbour of the file's own forests (it need
+  not be symmetric).
+
+Then pair {A, B} is counted exactly once, by whichever file owns the
+smaller-RA forest, with the other supplied from its buffer. No
+cross-rank communication or de-duplication pass is needed — which is
+what makes the ordering idea the right one.
+
+Two details for whoever implements it:
+
+- The rule is strict `<`, so two forests with *exactly* equal RA are
+  dropped rather than double counted. Harmless in practice with floats,
+  but it means the rule is "drop ties", not "count once".
+- `correlation_procedures_pycuda.init()` already takes a `pixel_list`
+  argument whose docstring anticipates exactly this — "the gpu needs
+  more data than the pixels that it is computing, it also needs the
+  neigboring pixels". The hook exists; nothing passes it yet.
+- `delta_reader.py` used to store `neigh_pixels` per forest, which is
+  precisely the per-forest map of which healpix pixels its neighbours
+  live in that a buffer builder needs. It was removed in #14 because
+  nothing read it and it slowed `np.save` significantly. That is not a
+  blocker: it is cheap to recompute when building the buffer, and
+  computing it at that point avoids carrying it through every save.
+
+**Worth doing together with the merge**, since a single driver that
+takes a list of files and a buffer policy replaces all four scripts, and
+the `2pla.py` "everything in one file" case becomes just the special
+case of one file with an empty buffer.
+
 ---
 
 ## Suggested order
