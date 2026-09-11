@@ -75,6 +75,9 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
             forest_lenght = len(forest.we)
             if forest_lenght > max_lenght:
                 max_lenght = forest_lenght
+    # The kernels take this as an int argument, which pycuda can only marshal
+    # from a fixed-width type, not a plain Python int.
+    max_lenght = np.int32(max_lenght)
 
     gran_dc = np.zeros((count_forests * max_lenght), dtype = np.float32)
     gran_rx = np.zeros((count_forests * max_lenght), dtype = np.float32)
