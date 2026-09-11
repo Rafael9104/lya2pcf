@@ -11,6 +11,7 @@ data: pixel -> [quasars]
 """
 
 import argparse
+import difflib
 import glob
 import numpy as np
 import os
@@ -22,8 +23,30 @@ import cosmology
 from forest_class import quasar
 import parameters as params
 
+def suggest_name(configured, present):
+    """Closest name in the file to the configured one, or None.
+
+    Prefixes are checked before fuzzy matching, so DELTA suggests
+    DELTA_BLIND rather than whichever name happens to score well.
+    """
+    others = [name for name in present if name != configured]
+    prefixed = [name for name in others
+                if name.startswith(configured) or configured.startswith(name)]
+    if prefixed:
+        return min(prefixed, key=len)
+    close = difflib.get_close_matches(configured, others, n=1, cutoff=0.7)
+    return close[0] if close else None
+
+
 def missing_keys_message(file, missing, present, what):
     """Report configured key names that the delta file does not have."""
+    lines = []
+    for label in missing:
+        configured = params.delta_keys[label]
+        suggestion = suggest_name(configured, present)
+        lines.append("  delta_keys.%-9s = %-14r not found%s\n"
+                     % (label, configured,
+                        "; did you mean %r ?" % suggestion if suggestion else ""))
     return (
         "These names from delta_keys in the configuration are not in the "
         "delta file:\n"
@@ -35,14 +58,10 @@ def missing_keys_message(file, missing, present, what):
         "The %s in this file are:\n"
         "  %s\n"
         "\n"
-        "Delta files differ between surveys and between blinded and "
-        "unblinded productions -- blinded DESI files carry the deltas in "
-        "DELTA_BLIND rather than DELTA, for instance. Set the matching "
-        "names under delta_keys in parameters.yml."
-        % (file,
-           "".join("  delta_keys.%-9s = %r  (not found)\n" % (label, params.delta_keys[label])
-                   for label in missing),
-           what, ", ".join(present)))
+        "Set the matching names under delta_keys in parameters.yml. If this "
+        "is blinded DESI data, the deltas are in DELTA_BLIND rather than "
+        "DELTA and nothing else in the file changes."
+        % (file, "".join(lines), what, ", ".join(present)))
 
 
 def check_keys(deltafile, file):

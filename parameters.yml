@@ -11,14 +11,22 @@
 data_dir: './deltas_lya2pcf/'
 corr_dir: './outputs/test/'
 
-# Names of the HDUs and metadata columns to read from the delta files. They
-# differ between surveys and between blinded and unblinded productions: DESI
-# DR1 blinded files carry the deltas in DELTA_BLIND rather than DELTA, for
-# instance. A name that does not match stops the run before any work is done,
-# listing what the file actually contains.
+# Names of the HDUs and metadata columns to read from the delta files.
+#
+#   *** BLINDED DATA: set delta to DELTA_BLIND ***
+#
+# Blinded DESI productions (DR1, for example) carry the deltas in an extension
+# called DELTA_BLIND instead of DELTA. Nothing else in the file changes -- the
+# metadata still has a plain Z column -- so this one line is the whole
+# difference. Reading blinded data with the default below stops the run.
+#
+# Names otherwise differ between surveys and productions. A name that does not
+# match stops the run before any work is done, listing what the file actually
+# contains and suggesting the closest match.
 delta_keys:
-  delta: "DELTA"        # DELTA_BLIND in blinded DESI files
-  lambda: "LAMBDA"
+  delta: "DELTA"        # <-- DELTA_BLIND for blinded data
+  lambda: "LAMBDA"      # LOGLAM in the older eBOSS layout, which needs
+                        # delta_reader_eboss.py rather than this setting
   weight: "WEIGHT"
   metadata: "METADATA"
   # columns inside the metadata table
