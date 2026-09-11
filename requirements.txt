@@ -11,5 +11,6 @@ conda-forge::healpy
 anaconda::mpi4py
 conda-forge::pycuda
 conda-forge::fitsio
+conda-forge::pyyaml
 #nvidia::cuda-nvcc
 #nvidia::cuda-runtime

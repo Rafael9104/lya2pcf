@@ -35,9 +35,10 @@ this will produce the files `data#.npy` that will be used to compute the correla
 $ python delta_reader_eboss.py --delta-dir DELTA_DIR
 ```
 
-Next we need to compute the histograms of w and wdelta which is the more computationally expensive part. Edit `parameters.py`
+Next we need to compute the histograms of w and wdelta which is the more computationally expensive part. Edit `parameters.yml`
 to the appropiate rmax, and number of bins that you want to compute your correlation function, as well as the location of
-your prefered output directory. Then execute:
+your prefered output directory. (`parameters.yml` is read from the current directory by default; set the `LYA2PCF_CONFIG`
+environment variable to point somewhere else.) Then execute:
 ```
 $ mpirun -np NUMBER_OF_CORES python 2pla.py (--cpu | --gpu)
 ```

@@ -1,6 +1,6 @@
 import numpy as np
 import time
-from parameters import *
+import parameters as params
 import math
 from numba.core.decorators import jit
 
@@ -58,7 +58,7 @@ def pair_correlation(angmax, ra1,dec1,w1,dw1,pl1,dc1,fib1,ra2,dec2,w2,dw2,pl2,dc
     w_hist  = np.zeros(shape_hist)
     dw_hist = np.zeros(shape_hist)
     len_this = len(dw1)
-    if abs(ra1-ra2)<chiquito and abs(dec1-dec2)<chiquito:
+    if abs(ra1-ra2)<params.chiquito and abs(dec1-dec2)<params.chiquito:
         delta_theta = np.sqrt(((ra1-ra2)*np.cos(dec1))**2+(dec1-dec2)**2)
     else:
         delta_theta=np.arccos(np.sin(dec1)*np.sin(dec2)+np.cos(dec1)*np.cos(dec2)*np.cos(ra1-ra2))
@@ -72,13 +72,13 @@ def pair_correlation(angmax, ra1,dec1,w1,dw1,pl1,dc1,fib1,ra2,dec2,w2,dw2,pl2,dc
             for j in range(len_that):
                 rp = np.abs(dc1[i] - dc2[j])*cos
                 rt = (dc1[i] + dc2[j])*sin
-                binp = int(rp/rpmax*numpix_rp)
-                bint = int(rt/rtmax*numpix_rt)
+                binp = int(rp/params.rpmax*params.numpix_rp)
+                bint = int(rt/params.rtmax*params.numpix_rt)
 
                 w12 = w1[i]*w2[j]
                 dw12 = dw1[i]*dw2[j]
 
-                if binp < numpix_rp and bint < numpix_rt:
+                if binp < params.numpix_rp and bint < params.numpix_rt:
                     w_hist[binp, bint] += w12
                     dw_hist[binp, bint] += dw12
     return w_hist, dw_hist

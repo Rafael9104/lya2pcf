@@ -1,7 +1,7 @@
 import numpy as np
 import random
 import time
-from parameters import *
+import parameters as params
 
 import pycuda.driver as cuda
 import pycuda.autoinit
@@ -52,6 +52,7 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     global weight_B
     global weight_B_d
     global total_bins
+    global max_lenght
 
     data = data_aux
     log_file = log_file_aux
@@ -64,9 +65,19 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     if not pixel_list:
         pixel_list = list(data.keys())
 
+    # max_lenght is a property of whichever data is actually loaded, not a
+    # static parameter, so it's computed here rather than read from parameters.
     count_forests = 0
+    max_lenght = 0
     for pixel_aux in pixel_list:
-        count_forests += len(data[pixel_aux])
+        for forest in data[pixel_aux]:
+            count_forests += 1
+            forest_lenght = len(forest.we)
+            if forest_lenght > max_lenght:
+                max_lenght = forest_lenght
+    # The kernels take this as an int argument, which pycuda can only marshal
+    # from a fixed-width type, not a plain Python int.
+    max_lenght = np.int32(max_lenght)
 
     gran_dc = np.zeros((count_forests * max_lenght), dtype = np.float32)
     gran_rx = np.zeros((count_forests * max_lenght), dtype = np.float32)
@@ -164,13 +175,13 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     dist_hist_d = cuda.mem_alloc(ldist)
 
     onefloat = np.empty(1, dtype = np.float32).nbytes
-    binner_d = gpuarray.to_gpu(np.array([numpix_rp / rmax, numpix_rt / rmax], dtype = np.float32))
+    binner_d = gpuarray.to_gpu(np.array([params.numpix_rp / params.rmax, params.numpix_rt / params.rmax], dtype = np.float32))
 
 
-    le1 = np.empty(shape_hist + (max_lenght,number_of_neighs), dtype = np.float32)
-    le2 = np.empty(shape_hist + (number_of_neighs,), dtype = np.float32)
-    le3 = np.zeros(shape_hist + (number_of_neighs,), dtype = np.bool_).nbytes
-    le4 = np.empty((number_of_neighs,), dtype = np.float32)
+    le1 = np.empty(shape_hist + (max_lenght,params.number_of_neighs), dtype = np.float32)
+    le2 = np.empty(shape_hist + (params.number_of_neighs,), dtype = np.float32)
+    le3 = np.zeros(shape_hist + (params.number_of_neighs,), dtype = np.bool_).nbytes
+    le4 = np.empty((params.number_of_neighs,), dtype = np.float32)
 
     etas12 = cuda.mem_alloc(le1.nbytes)
     etas21 = cuda.mem_alloc(le1.nbytes)
@@ -180,12 +191,12 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     etas23 = cuda.mem_alloc(le2.nbytes)
     etas32 = cuda.mem_alloc(le2.nbytes)
     etas33 = cuda.mem_alloc(le2.nbytes)
-    activeBs = gpuarray.zeros(shape_hist + (number_of_neighs,), dtype = np.bool_)
-    activeBs_index = gpuarray.zeros(shape_hist + (number_of_neighs,), dtype = np.int32)
+    activeBs = gpuarray.zeros(shape_hist + (params.number_of_neighs,), dtype = np.bool_)
+    activeBs_index = gpuarray.zeros(shape_hist + (params.number_of_neighs,), dtype = np.int32)
     index_j = cuda.mem_alloc(le4.nbytes)
 
-    size_auxiliars_real = np.empty((max_lenght, max_lenght, number_of_neighs), dtype = np.float32).nbytes
-    size_auxiliars_int = np.empty((max_lenght, max_lenght, number_of_neighs), dtype = np.int32).nbytes
+    size_auxiliars_real = np.empty((max_lenght, max_lenght, params.number_of_neighs), dtype = np.float32).nbytes
+    size_auxiliars_int = np.empty((max_lenght, max_lenght, params.number_of_neighs), dtype = np.int32).nbytes
     x12 = cuda.mem_alloc(size_auxiliars_real)
     y12 = cuda.mem_alloc(size_auxiliars_real)
     z12 = cuda.mem_alloc(size_auxiliars_real)
@@ -238,18 +249,18 @@ def distortion_per_pixel(forest_list, **kargs):
         neigh_sizes_d = gpuarray.to_gpu(neigh_sizes)
 
         # Computing the total number of blocks per kernel. It is determined by the number of elements to be computed.
-        total_blocks_x = int(np.ceil(forest1_lenght / threads_per_block[0]))
-        total_blocks_y = int(np.ceil(max_lenght / threads_per_block[1]))
-        total_blocks_z = int(np.ceil(number_of_neighs / threads_per_block[2]))
+        total_blocks_x = int(np.ceil(forest1_lenght / params.distortion_threads_per_block[0]))
+        total_blocks_y = int(np.ceil(max_lenght / params.distortion_threads_per_block[1]))
+        total_blocks_z = int(np.ceil(number_of_neighs / params.distortion_threads_per_block[2]))
         total_blocks_dist = (total_blocks_x, total_blocks_y, total_blocks_z)
-        total_blocks_x2 = int(np.ceil(shape_hist[0]*shape_hist[1] / threads_per_block_2[0]))
-        total_blocks_y2 = int(np.ceil(number_of_neighs / threads_per_block_2[1]))
+        total_blocks_x2 = int(np.ceil(shape_hist[0]*shape_hist[1] / params.distortion_threads_per_block_2[0]))
+        total_blocks_y2 = int(np.ceil(number_of_neighs / params.distortion_threads_per_block_2[1]))
         total_blocks_ordering = (total_blocks_x2, total_blocks_y2, 1)
 
         # This kernel precomputes the distances from forest1 to every other forest in its neighborhood
         precompute_distances(max_lenght, base_d, neigh_index_d, neigh_sizes_d, binner_d,
             gran_rx_d, gran_ry_d, gran_rz_d, gran_x_d, gran_y_d, gran_z_d, gran_dc_d, 
-            x12, y12, z12, r12, bin_rp, bin_rt, block = threads_per_block, grid = total_blocks_dist)
+            x12, y12, z12, r12, bin_rp, bin_rt, block = params.distortion_threads_per_block, grid = total_blocks_dist)
 
 
         compute_etas(max_lenght, numpix_d, base_d, neigh_index_d, neigh_sizes_d,
@@ -258,10 +269,10 @@ def distortion_per_pixel(forest_list, **kargs):
             activeBs,
             etas12, etas21, etas22, etas13, etas31, etas23, etas32, etas33,
             weight_B_d,
-            block = threads_per_block, grid = total_blocks_dist)
+            block = params.distortion_threads_per_block, grid = total_blocks_dist)
 
 
-        order_active(activeBs, activeBs_index, numpix_d, base_d, index_j, block=threads_per_block_2, grid=total_blocks_ordering)
+        order_active(activeBs, activeBs_index, numpix_d, base_d, index_j, block=params.distortion_threads_per_block_2, grid=total_blocks_ordering)
 
 
         compute_d(max_lenght, numpix_d, base_d, neigh_index_d, neigh_sizes_d,
@@ -270,7 +281,7 @@ def distortion_per_pixel(forest_list, **kargs):
             activeBs_index,
             etas12, etas21, etas22, etas13, etas31, etas23, etas32, etas33,
             dist_hist_d,
-            block = threads_per_block, grid = total_blocks_dist
+            block = params.distortion_threads_per_block, grid = total_blocks_dist
             )
 
     cuda.memcpy_dtoh(dist_hist, dist_hist_d)

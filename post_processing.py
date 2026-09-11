@@ -6,7 +6,7 @@ import glob
 import os
 import argparse
 import numpy as np
-from parameters import *
+import parameters as params
 from numba.core.decorators import jit
 import fitsio
 import warnings
@@ -119,7 +119,7 @@ if __name__ == '__main__':
         help = 'For large number of bins, specially in the three-point correlation, the errors are estimated without the full covariance.')
     args = parser.parse_args()
 
-    shape_hist = (numpix_rp, numpix_rt)
+    shape_hist = (params.numpix_rp, params.numpix_rt)
     name_partials = '2d_histogram_pixel_*'
     # Name of the outputs
     cor_name_file = 'correlation_2d'
@@ -127,8 +127,8 @@ if __name__ == '__main__':
     fits_name_file = "correlation.out.gz"
 
 
-    print('Looking for histogram files in ' + corr_dir)
-    histogram_files = glob.glob(os.path.join(corr_dir, name_partials))
+    print('Looking for histogram files in ' + params.corr_dir)
+    histogram_files = glob.glob(os.path.join(params.corr_dir, name_partials))
     total_files = len(histogram_files)
     print('In total ' + str(total_files) + ' files were found.')
 
@@ -155,19 +155,19 @@ if __name__ == '__main__':
         error, correlation = diag_error(da, we)
     else:
         covariance_not_smooth, correlation = cov(da, we)
-        bin_r_p, bin_r_t = bin_coordinates(numpix_rp, numpix_rt)
+        bin_r_p, bin_r_t = bin_coordinates(params.numpix_rp, params.numpix_rt)
         covariance = cov_smooth(da, we, bin_r_p, bin_r_t, covariance_not_smooth)
         error = np.sqrt(np.diagonal(covariance))
-        np.save(os.path.join(corr_dir, 'covariance'), covariance)
+        np.save(os.path.join(params.corr_dir, 'covariance'), covariance)
         print('The smoothed covariance was saved.')
-        np.save(os.path.join(corr_dir, 'covariance_not_smooth'), covariance_not_smooth)
+        np.save(os.path.join(params.corr_dir, 'covariance_not_smooth'), covariance_not_smooth)
         print('The unsmoothed covariance was saved.')
 
     # We reshape the correlation and error arrays to their original shape.
     correlation = np.reshape(correlation, shape)
     error = np.reshape(error, shape)
-    np.save(os.path.join(corr_dir, cor_name_file), correlation)
-    np.save(os.path.join(corr_dir, error_name_file), error)
+    np.save(os.path.join(params.corr_dir, cor_name_file), correlation)
+    np.save(os.path.join(params.corr_dir, error_name_file), error)
     print('The correlation and error were saved.')
 
     # The following coordinates correspond to the center of the bins. They are not the
@@ -176,24 +176,24 @@ if __name__ == '__main__':
         
     rp = correlation.copy()
     rt = correlation.copy()
-    for i in range(numpix_rp):
-            for j in range(numpix_rt):
-                rp[i,j]=(i + 0.5)*rpmax / numpix_rp
-                rt[i,j]=(j + 0.5)*rtmax / numpix_rt
+    for i in range(params.numpix_rp):
+            for j in range(params.numpix_rt):
+                rp[i,j]=(i + 0.5)*params.rpmax / params.numpix_rp
+                rt[i,j]=(j + 0.5)*params.rtmax / params.numpix_rt
     if args.write_coordinates:
         print('Writing the coordinates. They are not necessary, but might be useful if you are doing your own analysis.')
-        np.save(os.path.join(corr_dir, 'rp'), rp)
-        np.save(os.path.join(corr_dir, 'rt'), rt)
+        np.save(os.path.join(params.corr_dir, 'rp'), rp)
+        np.save(os.path.join(params.corr_dir, 'rt'), rt)
 
     try:
-        distortion = np.load(os.path.join(corr_dir, "distortion.npy"))
+        distortion = np.load(os.path.join(params.corr_dir, "distortion.npy"))
     except:
         warnings.warn('No distortion.npy found. Compute it first if you want to obtain a fits.gz file with all the outputs.')
         quit()
 
-    fits_file = fitsio.FITS(os.path.join(corr_dir, fits_name_file), 'rw')
+    fits_file = fitsio.FITS(os.path.join(params.corr_dir, fits_name_file), 'rw')
     
-    n_rows = numpix_rp * numpix_rt
+    n_rows = params.numpix_rp * params.numpix_rt
     matrix_type = str(int(n_rows))+"D"
     dtype=[('DA', 'f8'), ('RP', 'f8'), ('RT', 'f8'), ('CO',matrix_type), ('DM',matrix_type)]	
     table_data = np.zeros(n_rows, dtype=dtype)
@@ -205,11 +205,11 @@ if __name__ == '__main__':
     
     header = {
     'RPMIN': 0,
-    'RPMAX': rpmax,
-    'RTMAX': rtmax,
-    'NP': numpix_rp,
-    'NT': numpix_rt,
-    'OMEGAM': Omm,
+    'RPMAX': params.rpmax,
+    'RTMAX': params.rtmax,
+    'NP': params.numpix_rp,
+    'NT': params.numpix_rt,
+    'OMEGAM': params.Omm,
     'OMEGAR': 0,
     'OMEGAK': 0,
     'WL': -1}

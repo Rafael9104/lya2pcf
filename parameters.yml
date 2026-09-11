@@ -1,0 +1,52 @@
+# Constants and parameters for lya2pcf.
+#
+# Loaded by parameters.py, which also computes a handful of values
+# derived from these (numpix_rp, OmDE, chiquito, ...). See parameters.py
+# for that derivation.
+#
+# The file loaded is ./parameters.yml by default; override with the
+# LYA2PCF_CONFIG environment variable.
+
+# IO parameters
+data_dir: './deltas_lya2pcf/'
+corr_dir: './outputs/test/'
+
+# Name of the keyword for the deltas in the .fit.gz files
+delta_key: "DELTA"  # Use this for eBOSS, DESI EDR and DESIY5 mocks
+
+# Size and number of pixels of correlation outputs
+bin_size_r: 4  # Mpc/h
+rmax: 200  # Mpc/h
+
+# For the three point
+numpix_mu: 10  # cos of the angle between r12 and r13 (-1 < mu < 1)
+numpix_theta: 10  # angle between the sides of the triangles and the line of sight
+
+# Constants
+lambdaa: 1215.67  # Angstroms
+c: 299792.458  # km/s
+
+# Forest parameters
+gamma: 3.8
+z_ref: 2.25
+nside: 32  # Healpix parameter
+chiquito_arcsec: 2  # Minimum angle to approximate sin(x)~x, in arcsec
+
+# Parameters for the cosmology module
+Omm: 0.3153
+# Interpolation parameters for d_c
+zmin: 0
+zmax: 10
+nz: 10000
+
+# The two-point correlation kernel sets its own block size internally
+# (correlation_procedures_pycuda.py), so it is not configurable here.
+distortion_threads_per_block: [8, 32, 4]
+distortion_threads_per_block_2: [32, 32, 1]
+max_threads: 1024
+
+number_of_neighs: 80
+
+# If using a machine with several cuda devices
+number_of_cuda_devices: 4
+cuda_device_first_number: 0

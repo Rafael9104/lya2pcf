@@ -1,6 +1,6 @@
 import numpy as np
 import time
-from parameters import *
+import parameters as params
 
 import pycuda.driver as cuda
 import pycuda.autoinit
@@ -42,6 +42,7 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     global gran_y_d
     global gran_z_d
     global numpix_d
+    global max_lenght
 
     data = data_aux
     log_file = log_file_aux
@@ -56,9 +57,19 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     if not pixel_list:
         pixel_list = list(data.keys())
 
+    # max_lenght is a property of whichever data is actually loaded, not a
+    # static parameter, so it's computed here rather than read from parameters.
     count_forests = 0
+    max_lenght = 0
     for pixel_aux in pixel_list:
-        count_forests += len(data[pixel_aux])
+        for forest in data[pixel_aux]:
+            count_forests += 1
+            forest_lenght = len(forest.we)
+            if forest_lenght > max_lenght:
+                max_lenght = forest_lenght
+    # The kernel takes this as an int argument, which pycuda can only marshal
+    # from a fixed-width type, not a plain Python int.
+    max_lenght = np.int32(max_lenght)
 
     gran_dc = np.zeros((count_forests * max_lenght), dtype = myfloat)
     gran_rx = np.zeros((count_forests * max_lenght), dtype = myfloat)
@@ -108,7 +119,7 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     cuda.memcpy_htod(gran_y_d, gran_y)
     cuda.memcpy_htod(gran_z_d, gran_z)
 
-    numpix_d = gpuarray.to_gpu(np.array([numpix_r, numpix_mu, numpix_theta], dtype = np.int32))
+    numpix_d = gpuarray.to_gpu(np.array([params.numpix_r, params.numpix_mu, params.numpix_theta], dtype = np.int32))
 
 
 def two_point_per_pixel(pixel, **kargs):
@@ -134,7 +145,7 @@ def two_point_per_pixel(pixel, **kargs):
     cuda.memcpy_htod(dw_hist_d, dw_hist)
 
     # Passing data to the GPU
-    rmax_d = gpuarray.to_gpu(np.array([rpmax,rtmax],dtype=myfloat))
+    rmax_d = gpuarray.to_gpu(np.array([params.rpmax,params.rtmax],dtype=myfloat))
         # Be careful, this can not change unless the kernel procedure change.
     threads_per_block = (1, 16, 16)
 
