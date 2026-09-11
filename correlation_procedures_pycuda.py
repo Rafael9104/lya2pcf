@@ -1,6 +1,7 @@
 import numpy as np
 import time
 import parameters as params
+import gpu_support
 
 import pycuda.driver as cuda
 import pycuda.autoinit
@@ -11,6 +12,7 @@ from pycuda.compiler import SourceModule
 # The kernel's precision and the dtype of the buffers we upload to it have to
 # agree, so both come from the same setting.
 myfloat = params.gpu_dtype
+gpu_support.check_precision_supported()
 with open('cuda_kernels.cpp') as f:
   mod = SourceModule(f.read(), options=['-DMYFLOAT=' + params.gpu_ctype])
 
@@ -97,6 +99,15 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
 
     lenght_data = gran_dw.nbytes
     lenght_data_small = gran_x.nbytes
+
+    gpu_support.require_memory(
+        6 * lenght_data + 3 * lenght_data_small,
+        "forest data (%d forests, longest %d pixels)" % (count_forests, max_lenght),
+        ["coadd/rebin the deltas upstream, which shortens the forests",
+         "split the deltas into more data files with delta_reader.py "
+         "--split-number and use 2pla_multiple_data.py",
+         "use coarser binning (larger bin_size_r, or smaller rmax)"])
+
     gran_dc_d = cuda.mem_alloc(lenght_data)
     gran_rx_d = cuda.mem_alloc(lenght_data)
     gran_ry_d = cuda.mem_alloc(lenght_data)

@@ -22,10 +22,10 @@ using myfloat = MYFLOAT;
 #define myfloat2int_rd CONCAT(CONCAT(__, MYFLOAT), 2int_rd)
 
 
-__global__ void precompute_distance_and_angles(int max_lenght, int *base, int *neigh_index, int *neigh_sizes, float *binner,
-    float *rx, float *ry, float *rz, float *x, float *y, float *z,
-    float *x12, float *y12, float *z12,
-    float *r12, int *bin_r12, int *bin_theta12) {
+__global__ void precompute_distance_and_angles(int max_lenght, int *base, int *neigh_index, int *neigh_sizes, myfloat *binner,
+    myfloat *rx, myfloat *ry, myfloat *rz, myfloat *x, myfloat *y, myfloat *z,
+    myfloat *x12, myfloat *y12, myfloat *z12,
+    myfloat *r12, int *bin_r12, int *bin_theta12) {
     const int i = blockDim.x*blockIdx.x + threadIdx.x;
     const int j = blockDim.y*blockIdx.y + threadIdx.y;
     const int k = blockDim.z*blockIdx.z + threadIdx.z;
@@ -33,8 +33,8 @@ __global__ void precompute_distance_and_angles(int max_lenght, int *base, int *n
     const int indice1 = base[0];
     const int size1 = base[1];
     const int number_of_neighs = base[2];
-    const float binner_r = binner[0];
-    const float binner_theta = binner[1];
+    const myfloat binner_r = binner[0];
+    const myfloat binner_theta = binner[1];
 
     if (i < size1 &&  k < number_of_neighs){
         const int indice2 = neigh_index[k];
@@ -43,12 +43,12 @@ __global__ void precompute_distance_and_angles(int max_lenght, int *base, int *n
             int indice12 = (i * number_of_neighs + k) * max_lenght + j;
             int indice2j = indice2 * max_lenght + j;
             int indice1i = indice1 * max_lenght + i;
-            float rx_12 = rx[indice2j] - rx[indice1i];
-            float ry_12 = ry[indice2j] - ry[indice1i];
-            float rz_12 = rz[indice2j] - rz[indice1i];
-            float n_12 = sqrtf(rx_12 * rx_12 + ry_12 * ry_12 + rz_12 * rz_12);
-            float inv = 1. / n_12;
-            float cos_theta;
+            myfloat rx_12 = rx[indice2j] - rx[indice1i];
+            myfloat ry_12 = ry[indice2j] - ry[indice1i];
+            myfloat rz_12 = rz[indice2j] - rz[indice1i];
+            myfloat n_12 = sqrt(rx_12 * rx_12 + ry_12 * ry_12 + rz_12 * rz_12);
+            myfloat inv = 1. / n_12;
+            myfloat cos_theta;
 
             x12[indice12] = rx_12 * inv;
             y12[indice12] = ry_12 * inv;
@@ -61,10 +61,10 @@ __global__ void precompute_distance_and_angles(int max_lenght, int *base, int *n
     }
 }
 
-__global__ void precompute_distances(int max_lenght, int *base, int *neigh_index, int *neigh_sizes, float *binner,
-    float *rx, float *ry, float *rz, float *x, float *y, float *z, float *dc,
-    float *x12, float *y12, float *z12,
-    float *r12, int *bin_rp, int *bin_rt) {
+__global__ void precompute_distances(int max_lenght, int *base, int *neigh_index, int *neigh_sizes, myfloat *binner,
+    myfloat *rx, myfloat *ry, myfloat *rz, myfloat *x, myfloat *y, myfloat *z, myfloat *dc,
+    myfloat *x12, myfloat *y12, myfloat *z12,
+    myfloat *r12, int *bin_rp, int *bin_rt) {
     const int i = blockDim.x*blockIdx.x + threadIdx.x;
     const int j = blockDim.y*blockIdx.y + threadIdx.y;
     const int f2 = blockDim.z*blockIdx.z + threadIdx.z;
@@ -72,8 +72,8 @@ __global__ void precompute_distances(int max_lenght, int *base, int *neigh_index
     const int indice1 = base[0];
     const int size1 = base[1];
     const int number_of_neighs = base[2];
-    const float binner_rp = binner[0];
-    const float binner_rt = binner[1];
+    const myfloat binner_rp = binner[0];
+    const myfloat binner_rt = binner[1];
 
     if (i < size1 &&  f2 < number_of_neighs){
         const int indice2 = neigh_index[f2];
@@ -82,16 +82,16 @@ __global__ void precompute_distances(int max_lenght, int *base, int *neigh_index
             int indice12 = (i * number_of_neighs + f2) * max_lenght + j;
             int indice2j = indice2 * max_lenght + j;
             int indice1i = indice1 * max_lenght + i;
-            float rx_12 = rx[indice2j] - rx[indice1i];
-            float ry_12 = ry[indice2j] - ry[indice1i];
-            float rz_12 = rz[indice2j] - rz[indice1i];
-            float n_12 = sqrtf(rx_12 * rx_12 + ry_12 * ry_12 + rz_12 * rz_12);
-            float inv = 1. / n_12;
-            float cos_sq =  x[indice1]*x[indice2] + y[indice1]*y[indice2] + z[indice1]*z[indice2];
-            float cos_half12 = sqrtf(0.5 * (1. + cos_sq));
-            float sin_half12 = sqrtf(0.5 * (1. - cos_sq));
-            float rp = abs(dc[indice1i] - dc[indice2j]) * cos_half12;
-            float rt = (dc[indice1i] + dc[indice2j]) * sin_half12;
+            myfloat rx_12 = rx[indice2j] - rx[indice1i];
+            myfloat ry_12 = ry[indice2j] - ry[indice1i];
+            myfloat rz_12 = rz[indice2j] - rz[indice1i];
+            myfloat n_12 = sqrt(rx_12 * rx_12 + ry_12 * ry_12 + rz_12 * rz_12);
+            myfloat inv = 1. / n_12;
+            myfloat cos_sq =  x[indice1]*x[indice2] + y[indice1]*y[indice2] + z[indice1]*z[indice2];
+            myfloat cos_half12 = sqrt(0.5 * (1. + cos_sq));
+            myfloat sin_half12 = sqrt(0.5 * (1. - cos_sq));
+            myfloat rp = fabs(dc[indice1i] - dc[indice2j]) * cos_half12;
+            myfloat rt = (dc[indice1i] + dc[indice2j]) * sin_half12;
 
             x12[indice12] = rx_12 * inv;
             y12[indice12] = ry_12 * inv;
@@ -177,11 +177,11 @@ __global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
 
 
 __global__ void compute_etas(int max_lenght, int *numpix, int *base, int *neigh_index, int *neigh_sizes,
-    float *we, float *delta_lambda,  int *bin_rp, int *bin_rt,
-    float *omega_delta_lambda2, float *omega,
+    myfloat *we, myfloat *delta_lambda,  int *bin_rp, int *bin_rt,
+    myfloat *omega_delta_lambda2, myfloat *omega,
     bool *ActiveBs,
-    float *eta12, float *eta21, float *eta22, float *eta13, float *eta31, float *eta23, float *eta32, float *eta33,
-    float *weight_B) {
+    myfloat *eta12, myfloat *eta21, myfloat *eta22, myfloat *eta13, myfloat *eta31, myfloat *eta23, myfloat *eta32, myfloat *eta33,
+    myfloat *weight_B) {
 
     const int i = blockDim.x*blockIdx.x + threadIdx.x;
     const int j = blockDim.y*blockIdx.y + threadIdx.y;
@@ -237,11 +237,11 @@ __global__ void order_active(
 }
 
 __global__ void compute_d(int max_lenght, int *numpix, int *base, int *neigh_index, int *neigh_sizes,
-    float *we, float *delta_lambda, 
+    myfloat *we, myfloat *delta_lambda,
     int *bin_rp, int *bin_rt,
     int *ActiveBs_index,
-    float *eta12, float *eta21, float *eta22, float *eta13, float *eta31, float *eta23, float *eta32, float *eta33,
-    float *d_hist) {
+    myfloat *eta12, myfloat *eta21, myfloat *eta22, myfloat *eta13, myfloat *eta31, myfloat *eta23, myfloat *eta32, myfloat *eta33,
+    myfloat *d_hist) {
     const int i = blockDim.x*blockIdx.x + threadIdx.x;
     const int j = blockDim.y*blockIdx.y + threadIdx.y;
     const int f2 = blockDim.z*blockIdx.z + threadIdx.z;
@@ -265,7 +265,7 @@ __global__ void compute_d(int max_lenght, int *numpix, int *base, int *neigh_ind
             const int A = bin_rp[indice12] * numpix_rt + bin_rt[indice12];
             const int indice1i = indice1 * max_lenght + i;
             const int indice2j = indice2 * max_lenght + j;
-            const float w12 = we[indice1i]*we[indice2j];
+            const myfloat w12 = we[indice1i]*we[indice2j];
 
             if (bin_rt[indice12] < numpix_rt && bin_rp[indice12] < numpix_rp){
                 atomicAdd(&d_hist[A*(1+tot_pix)], w12);
