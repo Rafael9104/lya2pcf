@@ -685,6 +685,28 @@ counted. `delta_reader.py --split-number` splits a sorted pixel list
 into contiguous chunks, so the loss happens along the boundaries between
 chunks. Confirmed as known and intended for a later fix.
 
+**Measured 2026-09-11**, DR1 set, the same 16 healpix pixels either way:
+
+```
+one file   (2pla.py style)            w_hist total  16,756,279,121
+four files (multiple_data style)      w_hist total  12,721,548,931
+                                      -> 24.08% of pair weight lost
+```
+
+Read that as an order of magnitude rather than a universal figure: with
+only 16 pixels in 4 chunks the boundaries are a large share of the
+volume, and a real dataset has far more pixels per file, so the fraction
+falls. But it rises again with `--split-number`, which a 40 GB run needs
+a lot of — the loss tracks the surface-to-volume ratio of the chunks.
+
+Note also that the lost pairs are **not a random subset**: pairs
+straddling a boundary are preferentially the widely separated ones, so
+the effect concentrates in the large-separation bins. Whether that
+biases xi = dw/w or mainly inflates its errors was not tested — a
+uniform loss would largely cancel in the ratio, a separation-dependent
+one need not. Worth measuring on xi directly before drawing any
+conclusion about the science impact.
+
 **The planned fix is a buffer (halo) zone**: each file also carries the
 neighbouring forests just outside its own pixels, so every forest it
 owns can see all of its neighbours.
