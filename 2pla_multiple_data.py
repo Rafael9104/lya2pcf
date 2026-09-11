@@ -24,7 +24,7 @@ if __name__ == '__main__':
     # Writing log files, one per mpi process
     #if not os.path.exists(corr_dir):
     os.makedirs(corr_dir, exist_ok=True)
-    log_filename = corr_dir + 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '.log'
+    log_filename = os.path.join(corr_dir, 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '.log')
     log_file = open(log_filename,"w+")
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -46,7 +46,7 @@ if __name__ == '__main__':
         kwargs['performance'] = True
 
     if mpi_rank == 0:
-        directory_data = glob.glob(data_dir+"/data*.npy")
+        directory_data = glob.glob(os.path.join(data_dir, "data*.npy"))
         directory_split = np.array_split(directory_data, mpi_size)
     else:
         directory_split = None
@@ -110,7 +110,7 @@ if __name__ == '__main__':
 
             histo = correlations.two_point_per_pixel(pixel, **kwargs)
 
-            np.save(corr_dir + name_partials + str(pixel), histo)
+            np.save(os.path.join(corr_dir, name_partials + str(pixel)), histo)
             pixel_counter += 1
             if args.verbose and pixel_counter > 1:
                 print('Exiting early due to --verbose option.')

@@ -82,4 +82,4 @@ for list_of_forests in data_list:
             data[forest_data.pix].append(forest_data)
         else:
             data[forest_data.pix] = [forest_data]
-np.save(args.data_dir+'/data1',data)
+np.save(os.path.join(args.data_dir, 'data1'), data)

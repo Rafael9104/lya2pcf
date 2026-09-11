@@ -3,6 +3,7 @@
     correlation, covariance matrix and plots.
 """
 import glob
+import os
 import argparse
 import numpy as np
 from parameters import *
@@ -127,7 +128,7 @@ if __name__ == '__main__':
 
 
     print('Looking for histogram files in ' + corr_dir)
-    histogram_files = glob.glob(corr_dir + name_partials)
+    histogram_files = glob.glob(os.path.join(corr_dir, name_partials))
     total_files = len(histogram_files)
     print('In total ' + str(total_files) + ' files were found.')
 
@@ -157,16 +158,16 @@ if __name__ == '__main__':
         bin_r_p, bin_r_t = bin_coordinates(numpix_rp, numpix_rt)
         covariance = cov_smooth(da, we, bin_r_p, bin_r_t, covariance_not_smooth)
         error = np.sqrt(np.diagonal(covariance))
-        np.save(corr_dir + 'covariance', covariance)
+        np.save(os.path.join(corr_dir, 'covariance'), covariance)
         print('The smoothed covariance was saved.')
-        np.save(corr_dir + 'covariance_not_smooth', covariance_not_smooth)
+        np.save(os.path.join(corr_dir, 'covariance_not_smooth'), covariance_not_smooth)
         print('The unsmoothed covariance was saved.')
 
     # We reshape the correlation and error arrays to their original shape.
     correlation = np.reshape(correlation, shape)
     error = np.reshape(error, shape)
-    np.save(corr_dir + cor_name_file, correlation)
-    np.save(corr_dir + error_name_file, error)
+    np.save(os.path.join(corr_dir, cor_name_file), correlation)
+    np.save(os.path.join(corr_dir, error_name_file), error)
     print('The correlation and error were saved.')
 
     # The following coordinates correspond to the center of the bins. They are not the
@@ -181,16 +182,16 @@ if __name__ == '__main__':
                 rt[i,j]=(j + 0.5)*rtmax / numpix_rt
     if args.write_coordinates:
         print('Writing the coordinates. They are not necessary, but might be useful if you are doing your own analysis.')
-        np.save(corr_dir + 'rp', rp)
-        np.save(corr_dir + 'rt', rt)
-    
+        np.save(os.path.join(corr_dir, 'rp'), rp)
+        np.save(os.path.join(corr_dir, 'rt'), rt)
+
     try:
-        distortion = np.load(corr_dir + "distortion.npy")
+        distortion = np.load(os.path.join(corr_dir, "distortion.npy"))
     except:
         warnings.warn('No distortion.npy found. Compute it first if you want to obtain a fits.gz file with all the outputs.')
         quit()
-        
-    fits_file = fitsio.FITS(corr_dir + fits_name_file, 'rw')
+
+    fits_file = fitsio.FITS(os.path.join(corr_dir, fits_name_file), 'rw')
     
     n_rows = numpix_rp * numpix_rt
     matrix_type = str(int(n_rows))+"D"

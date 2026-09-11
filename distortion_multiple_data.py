@@ -25,7 +25,7 @@ if __name__ == '__main__':
     if not os.path.exists(corr_dir):
         os.makedirs(corr_dir)
 
-    log_filename = corr_dir + 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '_distortion.log'
+    log_filename = os.path.join(corr_dir, 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '_distortion.log')
     log_file = open(log_filename,"w+")
 
     # global data
@@ -46,7 +46,7 @@ if __name__ == '__main__':
 
     # global data
     if mpi_rank == 0:
-        directory_data = glob.glob(data_dir+"/data*.npy")
+        directory_data = glob.glob(os.path.join(data_dir, "data*.npy"))
         directory_split = np.array_split(directory_data, mpi_size)
     else:
         directory_split = None
@@ -133,4 +133,4 @@ if __name__ == '__main__':
         weight_total = weight_A
 
     if mpi_rank == 0:
-            np.save(corr_dir + 'distortion', distortion_total/weight_total[:, None])
+            np.save(os.path.join(corr_dir, 'distortion'), distortion_total/weight_total[:, None])
