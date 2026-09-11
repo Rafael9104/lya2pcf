@@ -39,10 +39,10 @@ zmin: 0
 zmax: 10
 nz: 10000
 
-# These apply to the distortion kernels only. The two-point correlation
-# kernel sets its own block size internally (correlation_procedures_pycuda.py).
-threads_per_block: [8, 32, 4]
-threads_per_block_2: [32, 32, 1]
+# The two-point correlation kernel sets its own block size internally
+# (correlation_procedures_pycuda.py), so it is not configurable here.
+distortion_threads_per_block: [8, 32, 4]
+distortion_threads_per_block_2: [32, 32, 1]
 max_threads: 1024
 
 number_of_neighs: 80

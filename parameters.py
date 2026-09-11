@@ -58,8 +58,8 @@ zmin = _cfg['zmin']
 zmax = _cfg['zmax']
 nz = _cfg['nz']
 
-threads_per_block = tuple(_cfg['threads_per_block'])
-threads_per_block_2 = tuple(_cfg['threads_per_block_2'])
+distortion_threads_per_block = tuple(_cfg['distortion_threads_per_block'])
+distortion_threads_per_block_2 = tuple(_cfg['distortion_threads_per_block_2'])
 max_threads = _cfg['max_threads']
 
 number_of_neighs = _cfg['number_of_neighs']
