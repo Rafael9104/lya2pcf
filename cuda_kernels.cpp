@@ -1,7 +1,25 @@
 #include <stdio.h>
-/* If we want to switch between single and float, change this lines as well as the two lines around 144 */
-using myfloat = double;
-/* using myfloat = float; */
+
+/* Precision of the two-point correlation kernel and its device buffers.
+   Set from Python via -DMYFLOAT=<float|double>, driven by the gpu_precision
+   setting in parameters.yml. The default below applies only when this file is
+   compiled by hand.
+
+   Note atomicAdd on double needs compute capability >= 6.0 (Pascal); on older
+   cards only float compiles. This applies to every kernel in this file, since
+   they are compiled together. */
+#ifndef MYFLOAT
+#define MYFLOAT double
+#endif
+using myfloat = MYFLOAT;
+
+/* Expands to __float2int_rd or __double2int_rd to match MYFLOAT, so the
+   rounding intrinsic follows the same single setting. An overloaded function
+   would be simpler, but pycuda compiles this file inside extern "C", which
+   does not allow overloads. */
+#define CONCAT_(a, b) a##b
+#define CONCAT(a, b) CONCAT_(a, b)
+#define myfloat2int_rd CONCAT(CONCAT(__, MYFLOAT), 2int_rd)
 
 
 __global__ void precompute_distance_and_angles(int max_lenght, int *base, int *neigh_index, int *neigh_sizes, float *binner,
@@ -142,12 +160,8 @@ __global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
                 myfloat rp = fabs(rc_1 - rc_2) * cos_half12;
                 myfloat rt = (rc_1 + rc_2) * sin_half12;
                 
-                /* Here we need to use one of the convertions depending on the type of variable */
-                
-                /* int binp = __float2int_rd(rp * binner_rp); */
-                /* int bint = __float2int_rd(rt * binner_rt); */
-                int binp = __double2int_rd(rp * binner_rp);
-                int bint = __double2int_rd(rt * binner_rt);
+                int binp = myfloat2int_rd(rp * binner_rp);
+                int bint = myfloat2int_rd(rt * binner_rt);
 
                 if(binp < numpix_rp && bint < numpix_rt){
                     hist_index = binp*numpix_rt + bint;

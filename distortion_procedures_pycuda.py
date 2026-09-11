@@ -9,8 +9,11 @@ import pycuda.gpuarray as gpuarray
 from pycuda.compiler import SourceModule
 
 random.seed(1)
+# These kernels are always float32, but they share cuda_kernels.cpp with the
+# correlation kernel, so the precision define has to be passed here too or the
+# whole file fails to compile where float64 atomics are unavailable.
 with open('cuda_kernels.cpp') as f:
-  mod = SourceModule(f.read())
+  mod = SourceModule(f.read(), options=['-DMYFLOAT=' + params.gpu_ctype])
 precompute_distances = mod.get_function("precompute_distances")
 compute_etas = mod.get_function("compute_etas")
 compute_d = mod.get_function("compute_d")

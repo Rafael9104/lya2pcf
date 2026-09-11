@@ -39,6 +39,17 @@ zmin: 0
 zmax: 10
 nz: 10000
 
+# Precision of the two-point correlation CUDA kernel and the device buffers it
+# reads: float32 or float64. Affects the GPU only — forest data on the CPU is
+# always float64, and it is converted on upload. The distortion kernels are
+# always float32 (they are written with fixed float types).
+#
+# float64 requires a GPU with compute capability >= 6.0 (Pascal or newer),
+# because atomicAdd on double does not exist on older cards; on those the
+# kernel will not compile at all. float32 runs anywhere, but accumulates the
+# histograms in single precision, which loses precision as the bin sums grow.
+gpu_precision: float64
+
 # The two-point correlation kernel sets its own block size internally
 # (correlation_procedures_pycuda.py), so it is not configurable here.
 distortion_threads_per_block: [8, 32, 4]

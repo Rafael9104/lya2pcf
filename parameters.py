@@ -58,6 +58,15 @@ zmin = _cfg['zmin']
 zmax = _cfg['zmax']
 nz = _cfg['nz']
 
+# Precision of the two-point correlation kernel: the numpy dtype for the device
+# buffers and the matching C type, compiled into the kernel via -DMYFLOAT.
+_gpu_precisions = {'float32': (np.float32, 'float'), 'float64': (np.float64, 'double')}
+gpu_precision = _cfg['gpu_precision']
+if gpu_precision not in _gpu_precisions:
+    raise ValueError("gpu_precision must be one of %s, got %r"
+                     % (sorted(_gpu_precisions), gpu_precision))
+gpu_dtype, gpu_ctype = _gpu_precisions[gpu_precision]
+
 distortion_threads_per_block = tuple(_cfg['distortion_threads_per_block'])
 distortion_threads_per_block_2 = tuple(_cfg['distortion_threads_per_block_2'])
 max_threads = _cfg['max_threads']

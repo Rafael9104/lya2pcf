@@ -8,8 +8,11 @@ import pycuda.gpuarray as gpuarray
 from pycuda.compiler import SourceModule
 
 
+# The kernel's precision and the dtype of the buffers we upload to it have to
+# agree, so both come from the same setting.
+myfloat = params.gpu_dtype
 with open('cuda_kernels.cpp') as f:
-  mod = SourceModule(f.read())
+  mod = SourceModule(f.read(), options=['-DMYFLOAT=' + params.gpu_ctype])
 
 pair_correlation = mod.get_function("pair_correlation")
 
@@ -48,11 +51,6 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     log_file = log_file_aux
     shape_hist = shape_hist_aux
     angmax = angmax_aux
-
-    #setting alias
-    global myfloat
-    # In order to change fron 64 to 32 bits, change this lines as well as the appropiate lines in cuda_kernels.cpp
-    myfloat = np.float64
 
     if not pixel_list:
         pixel_list = list(data.keys())
