@@ -80,9 +80,14 @@ def record_from_deltas(file):
     deltafile = fitsio.FITS(file)
     check_keys(deltafile, file)
     numberofforests,numberoflambdas = deltafile[keys['delta']].get_dims()
-    # Read once per file rather than once per forest.
+    # Each extension is read once per file and then indexed in memory. Reading
+    # row by row instead costs a separate cfitsio call per forest, and the
+    # deltas were being read twice over. The cost is holding one file's deltas
+    # and weights per worker process while it runs.
     metadata = deltafile[keys['metadata']][:]
     lambd_list = deltafile[keys['lambda']][:]
+    deltas = deltafile[keys['delta']].read()
+    weights = deltafile[keys['weight']].read()
     for i in range(numberofforests):
         forest_data = quasar(metadata[keys['los_id']][i],
             metadata[keys['los_id']][i],
@@ -90,16 +95,14 @@ def record_from_deltas(file):
             metadata[keys['ra']][i],
             metadata[keys['dec']][i],
             numberoflambdas)
-        delta1 = deltafile[keys['delta']][i,:][0]
-        mask = np.isfinite(delta1)
+        delta_row = deltas[i]
+        mask = np.isfinite(delta_row)
         lambd = lambd_list[mask]
         z = lambd/params.lambdaa - 1
         loglam = np.log10(lambd)
         correctionfactor=np.power((z + 1.)/(1. + params.z_ref), params.gammaovertwo)
-        weight_list = deltafile[keys['weight']][i,:][0]
-        forest_data.we = weight_list[mask] * correctionfactor
-        delta_list = deltafile[keys['delta']][i,:][0]
-        forest_data.fill_dw(delta_list[mask], loglam, True)
+        forest_data.we = weights[i][mask] * correctionfactor
+        forest_data.fill_dw(delta_row[mask], loglam, True)
         #forest_data.dw = forest.data['WEIGHT']*forest.data['DELTA']*correctionfactor
         
         comov_distance = cosmology.dc_interpol(z)
