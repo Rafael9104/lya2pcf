@@ -61,15 +61,6 @@ def record_from_deltas(file):
         list_of_forests.append(forest_data)
     return list_of_forests
 
-def substitute_parameter(key,value):
-    import fileinput
-
-    for line in fileinput.input("parameters.py", inplace=True):
-        if key in line:
-            value_str = str(int(value))
-            line = key + " = np.int32(" + value_str + ")\n"
-        print('{}'.format(line), end='')
-
 parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
     description='Takes delta files by picca and stores data in data.npy.')
 parser.add_argument('--delta-dir', type=str, required=True,
@@ -145,6 +136,5 @@ for subset in pixels_partial:
     for pixel in subset:
         data.pop(pixel)
 
-substitute_parameter("max_lenght", max_lenght)
 print("The largest forest has ", max_lenght, " data points.")
 print("The number of forests is:", j)
