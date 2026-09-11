@@ -1,6 +1,6 @@
 import numpy as np
 import time
-from parameters import *
+import parameters as params
 
 import pycuda.driver as cuda
 import pycuda.autoinit
@@ -116,7 +116,7 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     cuda.memcpy_htod(gran_y_d, gran_y)
     cuda.memcpy_htod(gran_z_d, gran_z)
 
-    numpix_d = gpuarray.to_gpu(np.array([numpix_r, numpix_mu, numpix_theta], dtype = np.int32))
+    numpix_d = gpuarray.to_gpu(np.array([params.numpix_r, params.numpix_mu, params.numpix_theta], dtype = np.int32))
 
 
 def two_point_per_pixel(pixel, **kargs):
@@ -142,7 +142,7 @@ def two_point_per_pixel(pixel, **kargs):
     cuda.memcpy_htod(dw_hist_d, dw_hist)
 
     # Passing data to the GPU
-    rmax_d = gpuarray.to_gpu(np.array([rpmax,rtmax],dtype=myfloat))
+    rmax_d = gpuarray.to_gpu(np.array([params.rpmax,params.rtmax],dtype=myfloat))
         # Be careful, this can not change unless the kernel procedure change.
     threads_per_block = (1, 16, 16)
 

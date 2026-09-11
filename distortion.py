@@ -8,7 +8,8 @@ import os
 import time
 from mpi4py import MPI
 
-from parameters import *
+import numpy as np
+import parameters as params
 from forest_class import quasar
 import distortion_procedures_pycuda as distortion
 
@@ -18,14 +19,14 @@ if __name__ == '__main__':
     comm = MPI.COMM_WORLD
     mpi_rank = comm.Get_rank()
     mpi_size = comm.Get_size()
-    cuda_device = str(int(mpi_rank%number_of_cuda_devices + cuda_device_first_number))
+    cuda_device = str(int(mpi_rank%params.number_of_cuda_devices + params.cuda_device_first_number))
     os.environ['CUDA_DEVICE'] = cuda_device
 
     # Writing log files, one per mpi process
-    if not os.path.exists(corr_dir):
-        os.makedirs(corr_dir)
+    if not os.path.exists(params.corr_dir):
+        os.makedirs(params.corr_dir)
 
-    log_filename = os.path.join(corr_dir, 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '_distortion.log')
+    log_filename = os.path.join(params.corr_dir, 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '_distortion.log')
     log_file = open(log_filename,"w+")
 
     # global data
@@ -45,11 +46,11 @@ if __name__ == '__main__':
         kwargs['performance'] = True
 
     print('Loading extracted file.')
-    data = np.load(os.path.join(data_dir, 'data1.npy'), allow_pickle=True).item()
+    data = np.load(os.path.join(params.data_dir, 'data1.npy'), allow_pickle=True).item()
 
     # Moving data dict to the correlation_procedures module
 
-    shape_hist = (numpix_rp, numpix_rt)
+    shape_hist = (params.numpix_rp, params.numpix_rt)
     total_bins = np.prod(shape_hist)
     disto = np.zeros((total_bins,total_bins))
     weight_A = np.zeros(total_bins)
@@ -82,7 +83,7 @@ if __name__ == '__main__':
     except:
         raise NameError('Empty data. Did you write correctly the input directory?')
 
-    angmax = 2*np.arcsin(0.5*rtmax/dmin)
+    angmax = 2*np.arcsin(0.5*params.rtmax/dmin)
     # We are not considering the case where \xi and \hat{\xi} have different dimensions
     # All: Read shape from correlation
 
@@ -122,4 +123,4 @@ if __name__ == '__main__':
         weight_total = weight_A
 
     if mpi_rank == 0:
-            np.save(os.path.join(corr_dir, 'distortion'), distortion_total/weight_total[:, None])
+            np.save(os.path.join(params.corr_dir, 'distortion'), distortion_total/weight_total[:, None])

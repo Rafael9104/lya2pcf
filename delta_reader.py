@@ -20,7 +20,7 @@ import warnings
 
 import cosmology
 from forest_class import quasar
-from parameters import *
+import parameters as params
 
 def record_from_deltas(file):
     """ Extracts all forests data from a single delta file to a list
@@ -31,7 +31,7 @@ def record_from_deltas(file):
     print('Extracting from file ',file)
     list_of_forests = []
     deltafile = fitsio.FITS(file)
-    numberofforests,numberoflambdas = deltafile[delta_key].get_dims()
+    numberofforests,numberoflambdas = deltafile[params.delta_key].get_dims()
     for i in range(numberofforests):
         metadata=deltafile["METADATA"][:]
         forest_data = quasar(metadata["LOS_ID"][i],
@@ -40,16 +40,16 @@ def record_from_deltas(file):
             metadata["RA"][i],
             metadata["DEC"][i],
             numberoflambdas)
-        delta1 = deltafile[delta_key][i,:][0]
+        delta1 = deltafile[params.delta_key][i,:][0]
         mask = np.isfinite(delta1)
         lambd_list = deltafile['LAMBDA'][:]
         lambd = lambd_list[mask]
-        z = lambd/lambdaa - 1
+        z = lambd/params.lambdaa - 1
         loglam = np.log10(lambd)
-        correctionfactor=np.power((z + 1.)/(1. + z_ref), gammaovertwo)
+        correctionfactor=np.power((z + 1.)/(1. + params.z_ref), params.gammaovertwo)
         weight_list = deltafile['WEIGHT'][i,:][0] 
         forest_data.we = weight_list[mask] * correctionfactor
-        delta_list = deltafile[delta_key][i,:][0]
+        delta_list = deltafile[params.delta_key][i,:][0]
         forest_data.fill_dw(delta_list[mask], loglam, True)
         #forest_data.dw = forest.data['WEIGHT']*forest.data['DELTA']*correctionfactor
         
@@ -65,7 +65,7 @@ parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFo
     description='Takes delta files by picca and stores data in data.npy.')
 parser.add_argument('--delta-dir', type=str, required=True,
     help = 'Path to the delta files.')
-parser.add_argument('--data-dir', type=str, default = data_dir,
+parser.add_argument('--data-dir', type=str, default = params.data_dir,
     help = 'Directory where the data will be stored.')
 parser.add_argument('--split-number', type=int, default = 1,
     help = 'Number of files to split the data.')
@@ -80,7 +80,7 @@ if not os.path.exists(args.data_dir):
 data = {}
 directory = glob.glob(args.delta_dir + '/*.fits.gz')
 if len(directory) == 0:
-    print('No delta files in directory ' + delta_dir)
+    print('No delta files in directory ' + args.delta_dir)
 
 pool = Pool()
 data_list = pool.map(record_from_deltas, directory)
@@ -105,7 +105,7 @@ for list_of_forests in data_list:
         sizes.append(new_long)
 del data_list
 
-angmax = 2*np.arcsin(0.5*rtmax/min_distance)
+angmax = 2*np.arcsin(0.5*params.rtmax/min_distance)
 print('Minimum comoving distance to a forest (Mpc/h):',min_distance)
 print('Maximum angle between pairs of skewers that are used (rad):', angmax)
 
@@ -118,7 +118,7 @@ neighbors = []
 for pix in list_of_pixels:
     for forest in data[pix]:
         min_distance = forest.dc[0]
-        angmax = 2*np.arcsin(0.5*rtmax/min_distance)
+        angmax = 2*np.arcsin(0.5*params.rtmax/min_distance)
         neigh_names, neigh_pixels = forest.neighborhood_names(data,angmax)
         forest.neigh_names = neigh_names
         forest.neigh_pixels = neigh_pixels

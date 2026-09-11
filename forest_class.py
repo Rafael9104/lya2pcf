@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-from parameters import *
+import parameters as params
 import healpy
 import numpy as np
 from healpy import query_disc
@@ -20,8 +20,8 @@ class quasar(object):
         self.lenght = lenght
 
         phi = ra
-        theta = halfpi - dec
-        pix = healpy.ang2pix(nside,theta,phi)
+        theta = params.halfpi - dec
+        pix = healpy.ang2pix(params.nside,theta,phi)
         self.pix = pix
 
         self.dw = np.zeros(lenght, dtype=np.float64)
@@ -86,7 +86,7 @@ class quasar(object):
         """
 
         mumin = np.cos(angmax)
-        neig_pix = query_disc(nside, [self.x, self.y, self.z], angmax, inclusive=True)
+        neig_pix = query_disc(params.nside, [self.x, self.y, self.z], angmax, inclusive=True)
         neig_pix = [p for p in neig_pix if p in data]
 
         neighs = []
@@ -108,7 +108,7 @@ class quasar(object):
         """
 
         mumin = np.cos(angmax)
-        neig_pix = query_disc(nside, [self.x, self.y, self.z], angmax, inclusive=True)
+        neig_pix = query_disc(params.nside, [self.x, self.y, self.z], angmax, inclusive=True)
         neig_pix = [p for p in neig_pix if p in data]
 
         neigh_names = []
