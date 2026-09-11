@@ -33,6 +33,45 @@ commands instead of `python delta_reader.py`.
 clusters, notebooks) via `pip install lya2pcf` / `pip install -e .`, and
 gives a natural place to put the config loader from item 2.
 
+### Design it as a library, not just an application
+
+lya2pcf should be usable as a dependency by other correlation code —
+a three-point correlation built on the same forests and the same GPU
+machinery is the obvious case, and it is worth designing for now rather
+than reopening the packaging later.
+
+The test is whether a separate program can reuse the expensive parts
+without copying them. That means exporting, as public API:
+
+- **`upload_forests(data, pixel_list) -> handles`** — the host-to-device
+  upload currently living inside `correlation_procedures_pycuda.init()`:
+  packing the forests into the flat `gran_*` arrays, allocating, copying,
+  and computing `max_lenght` from the data. This is ~45 lines that any
+  GPU code over the same forests needs, and it is identical whatever
+  correlation is being computed afterwards.
+- **`compile_kernels(path)`** — the `SourceModule` wrapper that applies
+  `gpu_precision` via `-DMYFLOAT` (#7). Exporting it lets another
+  package compile *its own* `.cu` file at the same precision, instead of
+  hardcoding a type and silently disagreeing with the library it is
+  built on.
+- **the `gpu_support` checks** — device capability and the
+  pre-allocation memory report, which are useful to any caller and not
+  specific to the two-point path.
+- the obvious data pieces: `quasar`, `cosmology`, the config loader, and
+  delta extraction returning a `data` dict (which is #4).
+
+None of this is speculative structure for its own sake: it is the code
+that already exists, exported rather than kept private. The consumer
+then writes only its own kernels and its own per-pixel routine.
+
+A corollary worth stating: **do not delete apparently-unused code during
+the move without checking.** The three-point hooks already in this repo
+(`numpix_mu`, `numpix_theta`, `numpix_r`, the `numpix_d` upload in
+`correlation_procedures_pycuda.init()`, and the
+`precompute_distance_and_angles` kernel, which no script here calls)
+are leftovers from an earlier split. They are dead *here*, so they can
+go — but check before assuming that of anything else.
+
 **Depends on:** nothing strictly, but do it *after* item 2 (YAML config) —
 otherwise you restructure imports once for packaging and again for config
 loading.
