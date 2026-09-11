@@ -140,7 +140,7 @@ pixels_partial = np.array_split(list_of_pixels, args.split_number)
 i=1
 for subset in pixels_partial:
     subdata = {x: data[x] for x in subset}
-    np.save(args.data_dir+'/data'+str(i),subdata)
+    np.save(os.path.join(args.data_dir, 'data' + str(i)), subdata)
     i+=1
     for pixel in subset:
         data.pop(pixel)

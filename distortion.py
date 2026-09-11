@@ -25,7 +25,7 @@ if __name__ == '__main__':
     if not os.path.exists(corr_dir):
         os.makedirs(corr_dir)
 
-    log_filename = corr_dir + 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '_distortion.log'
+    log_filename = os.path.join(corr_dir, 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '_distortion.log')
     log_file = open(log_filename,"w+")
 
     # global data
@@ -45,7 +45,7 @@ if __name__ == '__main__':
         kwargs['performance'] = True
 
     print('Loading extracted file.')
-    data = np.load(data_dir + 'data1.npy', allow_pickle=True).item()
+    data = np.load(os.path.join(data_dir, 'data1.npy'), allow_pickle=True).item()
 
     # Moving data dict to the correlation_procedures module
 
@@ -122,4 +122,4 @@ if __name__ == '__main__':
         weight_total = weight_A
 
     if mpi_rank == 0:
-            np.save(corr_dir + 'distortion', distortion_total/weight_total[:, None])
+            np.save(os.path.join(corr_dir, 'distortion'), distortion_total/weight_total[:, None])
