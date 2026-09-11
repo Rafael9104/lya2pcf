@@ -81,6 +81,32 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     # from a fixed-width type, not a plain Python int.
     max_lenght = np.int32(max_lenght)
 
+    # Checked before the host arrays are built, not just before the uploads:
+    # the forest buffers are the same size on both sides, so on a large
+    # dataset allocating and filling them first would exhaust host memory
+    # before the GPU was ever asked for anything. int() guards against the
+    # int32 max_lenght overflowing these products.
+    itemsize = np.dtype(params.gpu_dtype).itemsize
+    ml, neighs, bins = int(max_lenght), params.number_of_neighs, int(total_bins)
+    forest_bytes = count_forests * ml * itemsize
+    gpu_support.require_memory(
+        7 * forest_bytes                             # dc, rx, ry, rz, we, dw, dl
+        + 5 * count_forests * itemsize               # x, y, z, odl2, omega
+        + bins * itemsize                            # weight_B
+        + bins * bins * itemsize                     # dist_hist
+        + 4 * bins * ml * neighs * itemsize          # etas12/21/13/31
+        + 4 * bins * neighs * itemsize               # etas22/23/32/33
+        + bins * neighs + bins * neighs * 4          # activeBs + index
+        + neighs * 4                                 # index_j
+        + 4 * ml * ml * neighs * itemsize            # x12/y12/z12/r12
+        + 2 * ml * ml * neighs * 4,                  # bin_rp/bin_rt
+        "distortion buffers (longest forest %d pixels, %d neighbours, %d bins)"
+        % (ml, neighs, bins),
+        ["coadd/rebin the deltas upstream: the x12/y12/z12/r12 buffers scale "
+         "as the square of the forest length, so coadding by 3 saves about 4x",
+         "lower 'number_of_neighs' in parameters.yml, which scales most buffers",
+         "use coarser binning (larger bin_size_r, or smaller rmax)"])
+
     gran_dc = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
     gran_rx = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
     gran_ry = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
@@ -116,31 +142,6 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
 
     lenght_data = gran_dw.nbytes
     lenght_data_small = gran_x.nbytes
-
-    # Everything this function is about to allocate, checked in one go so the
-    # report names the total the run needs rather than whichever allocation
-    # happened to be the one that did not fit. int() guards against the int32
-    # max_lenght overflowing these products.
-    itemsize = np.dtype(params.gpu_dtype).itemsize
-    ml, neighs, bins = int(max_lenght), params.number_of_neighs, int(total_bins)
-    required = (7 * lenght_data + 5 * lenght_data_small     # forest buffers
-                + bins * itemsize                           # weight_B
-                + bins * bins * itemsize                    # dist_hist
-                + 4 * bins * ml * neighs * itemsize         # etas12/21/13/31
-                + 4 * bins * neighs * itemsize              # etas22/23/32/33
-                + bins * neighs + bins * neighs * 4         # activeBs + index
-                + neighs * 4                                # index_j
-                + 4 * ml * ml * neighs * itemsize           # x12/y12/z12/r12
-                + 2 * ml * ml * neighs * 4)                 # bin_rp/bin_rt
-    gpu_support.require_memory(
-        required,
-        "distortion buffers (longest forest %d pixels, %d neighbours, %d bins)"
-        % (ml, neighs, bins),
-        ["coadd/rebin the deltas upstream: the x12/y12/z12/r12 buffers scale "
-         "as the square of the forest length, so coadding by 3 saves about 4x",
-         "lower 'number_of_neighs' in parameters.yml, which scales most buffers",
-         "use coarser binning (larger bin_size_r, or smaller rmax)"])
-
     gran_dc_d = cuda.mem_alloc(lenght_data)
     gran_rx_d = cuda.mem_alloc(lenght_data)
     gran_ry_d = cuda.mem_alloc(lenght_data)

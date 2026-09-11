@@ -71,6 +71,23 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     # from a fixed-width type, not a plain Python int.
     max_lenght = np.int32(max_lenght)
 
+    # Checked before the host arrays are built, not just before the uploads:
+    # these buffers are the same size on both sides, so on a large dataset
+    # allocating and filling them first would exhaust host memory before the
+    # GPU was ever asked for anything.
+    itemsize = np.dtype(myfloat).itemsize
+    forest_bytes = count_forests * int(max_lenght) * itemsize
+    gpu_support.require_memory(
+        6 * forest_bytes                                  # dc, rx, ry, rz, we, dw
+        + 3 * count_forests * itemsize                    # x, y, z
+        + 2 * int(np.prod(shape_hist)) * itemsize,        # w_hist, dw_hist
+        "forest data (%d forests, longest %d pixels)" % (count_forests, max_lenght),
+        ["split the deltas into more files with delta_reader.py "
+         "--split-number and run 2pla_multiple_data.py, which uploads one "
+         "file at a time",
+         "coadd/rebin the deltas upstream, which shortens every forest",
+         "run on more GPUs: each MPI rank takes a share of the pixels"])
+
     gran_dc = np.zeros((count_forests * max_lenght), dtype = myfloat)
     gran_rx = np.zeros((count_forests * max_lenght), dtype = myfloat)
     gran_ry = np.zeros((count_forests * max_lenght), dtype = myfloat)
@@ -99,15 +116,6 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
 
     lenght_data = gran_dw.nbytes
     lenght_data_small = gran_x.nbytes
-
-    gpu_support.require_memory(
-        6 * lenght_data + 3 * lenght_data_small,
-        "forest data (%d forests, longest %d pixels)" % (count_forests, max_lenght),
-        ["coadd/rebin the deltas upstream, which shortens the forests",
-         "split the deltas into more data files with delta_reader.py "
-         "--split-number and use 2pla_multiple_data.py",
-         "use coarser binning (larger bin_size_r, or smaller rmax)"])
-
     gran_dc_d = cuda.mem_alloc(lenght_data)
     gran_rx_d = cuda.mem_alloc(lenght_data)
     gran_ry_d = cuda.mem_alloc(lenght_data)
