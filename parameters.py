@@ -18,8 +18,15 @@ with open(_config_path) as _f:
 data_dir = _cfg['data_dir']
 corr_dir = _cfg['corr_dir']
 
-# Name of the keyword for the deltas in the .fit.gz files
-delta_key = _cfg['delta_key']
+# Names of the HDUs and metadata columns in the delta files; see parameters.yml.
+# Split by where they are looked up, since the two need different error reports.
+delta_hdu_keys = ('delta', 'lambda', 'weight', 'metadata')
+delta_column_keys = ('los_id', 'targetid', 'ra', 'dec')
+delta_keys = _cfg['delta_keys']
+_missing_keys = [k for k in delta_hdu_keys + delta_column_keys if k not in delta_keys]
+if _missing_keys:
+    raise ValueError("delta_keys in %s is missing: %s"
+                     % (_config_path, ', '.join(_missing_keys)))
 
 # Size and number of pixels of correlation outputs
 bin_size_r = _cfg['bin_size_r']

@@ -11,8 +11,21 @@
 data_dir: './deltas_lya2pcf/'
 corr_dir: './outputs/test/'
 
-# Name of the keyword for the deltas in the .fit.gz files
-delta_key: "DELTA"  # Use this for eBOSS, DESI EDR and DESIY5 mocks
+# Names of the HDUs and metadata columns to read from the delta files. They
+# differ between surveys and between blinded and unblinded productions: DESI
+# DR1 blinded files carry the deltas in DELTA_BLIND rather than DELTA, for
+# instance. A name that does not match stops the run before any work is done,
+# listing what the file actually contains.
+delta_keys:
+  delta: "DELTA"        # DELTA_BLIND in blinded DESI files
+  lambda: "LAMBDA"
+  weight: "WEIGHT"
+  metadata: "METADATA"
+  # columns inside the metadata table
+  los_id: "LOS_ID"
+  targetid: "TARGETID"
+  ra: "RA"
+  dec: "DEC"
 
 # Size and number of pixels of correlation outputs
 bin_size_r: 4  # Mpc/h

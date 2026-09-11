@@ -22,6 +22,52 @@ import cosmology
 from forest_class import quasar
 import parameters as params
 
+def missing_keys_message(file, missing, present, what):
+    """Report configured key names that the delta file does not have."""
+    return (
+        "These names from delta_keys in the configuration are not in the "
+        "delta file:\n"
+        "\n"
+        "  file: %s\n"
+        "\n"
+        "%s"
+        "\n"
+        "The %s in this file are:\n"
+        "  %s\n"
+        "\n"
+        "Delta files differ between surveys and between blinded and "
+        "unblinded productions -- blinded DESI files carry the deltas in "
+        "DELTA_BLIND rather than DELTA, for instance. Set the matching "
+        "names under delta_keys in parameters.yml."
+        % (file,
+           "".join("  delta_keys.%-9s = %r  (not found)\n" % (label, params.delta_keys[label])
+                   for label in missing),
+           what, ", ".join(present)))
+
+
+def check_keys(deltafile, file):
+    """Fail with a readable message if the configured keys do not match.
+
+    Called once up front as well as per file, because an error raised inside
+    a multiprocessing worker comes back wrapped in a RemoteTraceback, and
+    because a directory can mix productions.
+    """
+    extensions = [hdu.get_extname() for hdu in deltafile]
+    missing = [label for label in params.delta_hdu_keys
+               if params.delta_keys[label] not in extensions]
+    if missing:
+        raise ValueError(missing_keys_message(file, missing,
+                                              [e for e in extensions if e], "extensions"))
+
+    columns = deltafile[params.delta_keys['metadata']].get_colnames()
+    missing = [label for label in params.delta_column_keys
+               if params.delta_keys[label] not in columns]
+    if missing:
+        raise ValueError(missing_keys_message(
+            file, missing, columns,
+            "columns in the %r table" % params.delta_keys['metadata']))
+
+
 def record_from_deltas(file):
     """ Extracts all forests data from a single delta file to a list
     of objects of type quasar.
@@ -30,26 +76,29 @@ def record_from_deltas(file):
     """
     print('Extracting from file ',file)
     list_of_forests = []
+    keys = params.delta_keys
     deltafile = fitsio.FITS(file)
-    numberofforests,numberoflambdas = deltafile[params.delta_key].get_dims()
+    check_keys(deltafile, file)
+    numberofforests,numberoflambdas = deltafile[keys['delta']].get_dims()
+    # Read once per file rather than once per forest.
+    metadata = deltafile[keys['metadata']][:]
+    lambd_list = deltafile[keys['lambda']][:]
     for i in range(numberofforests):
-        metadata=deltafile["METADATA"][:]
-        forest_data = quasar(metadata["LOS_ID"][i],
-            metadata["LOS_ID"][i],
-            metadata["TARGETID"][i],
-            metadata["RA"][i],
-            metadata["DEC"][i],
+        forest_data = quasar(metadata[keys['los_id']][i],
+            metadata[keys['los_id']][i],
+            metadata[keys['targetid']][i],
+            metadata[keys['ra']][i],
+            metadata[keys['dec']][i],
             numberoflambdas)
-        delta1 = deltafile[params.delta_key][i,:][0]
+        delta1 = deltafile[keys['delta']][i,:][0]
         mask = np.isfinite(delta1)
-        lambd_list = deltafile['LAMBDA'][:]
         lambd = lambd_list[mask]
         z = lambd/params.lambdaa - 1
         loglam = np.log10(lambd)
         correctionfactor=np.power((z + 1.)/(1. + params.z_ref), params.gammaovertwo)
-        weight_list = deltafile['WEIGHT'][i,:][0] 
+        weight_list = deltafile[keys['weight']][i,:][0]
         forest_data.we = weight_list[mask] * correctionfactor
-        delta_list = deltafile[params.delta_key][i,:][0]
+        delta_list = deltafile[keys['delta']][i,:][0]
         forest_data.fill_dw(delta_list[mask], loglam, True)
         #forest_data.dw = forest.data['WEIGHT']*forest.data['DELTA']*correctionfactor
         
@@ -81,6 +130,12 @@ data = {}
 directory = glob.glob(args.delta_dir + '/*.fits.gz')
 if len(directory) == 0:
     print('No delta files in directory ' + args.delta_dir)
+
+# Check the configured keys against one file before starting the workers, so a
+# mismatch is reported plainly instead of through a RemoteTraceback.
+if directory:
+    with fitsio.FITS(directory[0]) as first_file:
+        check_keys(first_file, directory[0])
 
 pool = Pool()
 data_list = pool.map(record_from_deltas, directory)
