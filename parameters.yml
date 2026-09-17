@@ -1,0 +1,98 @@
+# Constants and parameters for lya2pcf.
+#
+# Loaded by parameters.py, which also computes a handful of values
+# derived from these (numpix_rp, OmDE, chiquito, ...). See parameters.py
+# for that derivation.
+#
+# The file loaded is ./parameters.yml by default; override with the
+# LYA2PCF_CONFIG environment variable.
+
+# IO parameters
+data_dir: './deltas_lya2pcf/'
+corr_dir: './outputs/test/'
+
+# Names of the HDUs and metadata columns to read from the delta files.
+#
+#   *** BLINDED DATA: set delta to DELTA_BLIND ***
+#
+# Blinded DESI productions (DR1, for example) carry the deltas in an extension
+# called DELTA_BLIND instead of DELTA. Nothing else in the file changes -- the
+# metadata still has a plain Z column -- so this one line is the whole
+# difference. Reading blinded data with the default below stops the run.
+#
+# Names otherwise differ between surveys and productions. A name that does not
+# match stops the run before any work is done, listing what the file actually
+# contains and suggesting the closest match.
+delta_keys:
+  delta: "DELTA"        # <-- DELTA_BLIND for blinded data
+  lambda: "LAMBDA"      # LOGLAM in the older eBOSS layout, which needs
+                        # delta_reader_eboss.py rather than this setting
+  weight: "WEIGHT"
+  metadata: "METADATA"
+  # columns inside the metadata table
+  los_id: "LOS_ID"
+  targetid: "TARGETID"
+  ra: "RA"
+  dec: "DEC"
+
+# Size and number of pixels of correlation outputs
+bin_size_r: 4  # Mpc/h
+rmax: 200  # Mpc/h
+
+# For the three point
+numpix_mu: 10  # cos of the angle between r12 and r13 (-1 < mu < 1)
+numpix_theta: 10  # angle between the sides of the triangles and the line of sight
+
+# Constants
+lambdaa: 1215.67  # Angstroms
+c: 299792.458  # km/s
+
+# Forest parameters
+gamma: 3.8
+z_ref: 2.25
+nside: 32  # Healpix parameter
+chiquito_arcsec: 2  # Minimum angle to approximate sin(x)~x, in arcsec
+
+# Parameters for the cosmology module
+Omm: 0.3153
+# Interpolation parameters for d_c
+zmin: 0
+zmax: 10
+nz: 10000
+
+# Precision of the CUDA kernels and the device buffers they read: float32 or
+# float64. Applies to both the two-point correlation and the distortion matrix.
+# Affects the GPU only — forest data on the CPU is always float64 and is
+# converted on upload.
+#
+# float64 requires a GPU with compute capability >= 6.0 (Pascal or newer),
+# because atomicAdd on double does not exist on older cards; on those the
+# kernels will not compile at all, and the run stops with an explicit message.
+# float32 runs anywhere, but accumulates the histograms in single precision,
+# which loses accuracy as the bin sums grow — measured at ~1.8% of the
+# correlation signal on a small test set, so prefer float64 for production
+# (see IMPROVEMENTS.md #7).
+#
+# Mind the memory, particularly for the distortion: its buffers reach ~4.9 GB
+# at float32 for native 0.8 Angstrom deltas and roughly double at float64.
+# The footprint depends strongly on the delta binning, since some buffers
+# scale as max_lenght squared — coadding the deltas by 3 upstream cuts it
+# about 4x. A run that does not fit stops with a report of what it needed.
+#
+# float64 requires a GPU with compute capability >= 6.0 (Pascal or newer),
+# because atomicAdd on double does not exist on older cards; on those the
+# kernel will not compile at all. float32 runs anywhere, but accumulates the
+# histograms in single precision, which loses precision as the bin sums grow.
+gpu_precision: float64
+
+# The two-point correlation kernel sets its own block size internally
+# (correlation_procedures_pycuda.py), so it is not configurable here.
+distortion_threads_per_block: [8, 32, 4]
+distortion_threads_per_block_2: [32, 32, 1]
+max_threads: 1024
+
+number_of_neighs: 80
+
+# If using a machine with several cuda devices
+number_of_cuda_devices: 4
+cuda_device_first_number: 0

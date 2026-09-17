@@ -7,7 +7,8 @@ import glob
 import os
 import time
 
-from parameters import *
+import numpy as np
+import parameters as params
 from forest_class import quasar
 
 from mpi4py import MPI
@@ -18,13 +19,13 @@ if __name__ == '__main__':
     comm = MPI.COMM_WORLD
     mpi_rank = comm.Get_rank()
     mpi_size = comm.Get_size()
-    cuda_device = str(int(mpi_rank%number_of_cuda_devices + cuda_device_first_number))
+    cuda_device = str(int(mpi_rank%params.number_of_cuda_devices + params.cuda_device_first_number))
     os.environ['CUDA_DEVICE'] = cuda_device
 
     # Writing log files, one per mpi process
     #if not os.path.exists(corr_dir):
-    os.makedirs(corr_dir, exist_ok=True)
-    log_filename = os.path.join(corr_dir, 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '.log')
+    os.makedirs(params.corr_dir, exist_ok=True)
+    log_filename = os.path.join(params.corr_dir, 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '.log')
     log_file = open(log_filename,"w+")
 
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
@@ -46,7 +47,7 @@ if __name__ == '__main__':
         kwargs['performance'] = True
 
     if mpi_rank == 0:
-        directory_data = glob.glob(os.path.join(data_dir, "data*.npy"))
+        directory_data = glob.glob(os.path.join(params.data_dir, "data*.npy"))
         directory_split = np.array_split(directory_data, mpi_size)
     else:
         directory_split = None
@@ -61,8 +62,8 @@ if __name__ == '__main__':
 
 
     name_partials = '2d_histogram_pixel_'
-    log_file.write('\nComputing 2 point correlation with \nrt_max = ' + str(rtmax) +
-     '\nrp_max = ' + str(rpmax) + '\npixels in t = ' + str(numpix_rt) + '\npixels in p = ' + str(numpix_rp))
+    log_file.write('\nComputing 2 point correlation with \nrt_max = ' + str(params.rtmax) +
+     '\nrp_max = ' + str(params.rpmax) + '\npixels in t = ' + str(params.numpix_rt) + '\npixels in p = ' + str(params.numpix_rp))
     
     log_file.flush()
 
@@ -83,8 +84,8 @@ if __name__ == '__main__':
             dmin  = min(dminlist)
         except:
             raise NameError('Empty data. Did you write correctly the input directory?')
-        angmax = 2*np.arcsin(0.5*rtmax/dmin)
-        shape_hist = (numpix_rp, numpix_rt)
+        angmax = 2*np.arcsin(0.5*params.rtmax/dmin)
+        shape_hist = (params.numpix_rp, params.numpix_rt)
 
         print('Minimum comoving distance to a forest (Mpc/h):',dmin)
         print('Maximum angle between pairs of skewers that are used (rad):', angmax)
@@ -110,7 +111,7 @@ if __name__ == '__main__':
 
             histo = correlations.two_point_per_pixel(pixel, **kwargs)
 
-            np.save(os.path.join(corr_dir, name_partials + str(pixel)), histo)
+            np.save(os.path.join(params.corr_dir, name_partials + str(pixel)), histo)
             pixel_counter += 1
             if args.verbose and pixel_counter > 1:
                 print('Exiting early due to --verbose option.')

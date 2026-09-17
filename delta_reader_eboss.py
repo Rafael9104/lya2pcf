@@ -20,7 +20,7 @@ import warnings
 
 import cosmology
 from forest_class import quasar
-from parameters import *
+import parameters as params
 
 def record_from_deltas(file):
     """ Extracts all forests data from a single delta file to a list
@@ -41,8 +41,8 @@ def record_from_deltas(file):
             len(forest['WEIGHT'][:]))
         
         loglam = forest['LOGLAM'][:]
-        z = np.power(10, (loglam - la)) - 1.
-        correctionfactor=np.power((z + 1.)/(1. + z_ref), gammaovertwo)
+        z = np.power(10, (loglam - params.la)) - 1.
+        correctionfactor=np.power((z + 1.)/(1. + params.z_ref), params.gammaovertwo)
         forest_data.we = forest['WEIGHT'][:] * correctionfactor
         forest_data.fill_dw(forest['DELTA'][:], loglam, True)
         #forest_data.dw = forest.data['WEIGHT']*forest.data['DELTA']*correctionfactor
@@ -59,7 +59,7 @@ parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFo
     description='Takes delta files by picca and stores data in data.npy.')
 parser.add_argument('--delta-dir', type=str, required=True,
     help = 'Path to the delta files.')
-parser.add_argument('--data-dir', type=str, default = data_dir,
+parser.add_argument('--data-dir', type=str, default = params.data_dir,
     help = 'Directory where the data will be stored.')
 args = parser.parse_args()
 
