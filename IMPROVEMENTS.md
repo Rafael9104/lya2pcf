@@ -948,6 +948,71 @@ zone (which needs per-forest neighbour-to-pixel info too — see #15's
 notes on `neigh_pixels`), so worth doing alongside either rather than as
 a third separate pass over the same neighbour search.
 
+## 17. Multi-GPU runs split "how many GPUs" across two unrelated places
+
+To run on several GPUs today you set two things that both amount to
+"how many GPUs am I using," in two different places, with nothing
+checking they agree:
+
+- `mpirun -np N` on the command line — the total number of MPI
+  processes/ranks for the whole job.
+- `number_of_cuda_devices` in `parameters.yml` — described in the README
+  as "the number of devices per node," used only to turn an MPI rank into
+  a local CUDA device index:
+
+  ```python
+  cuda_device = str(int(mpi_rank % params.number_of_cuda_devices + params.cuda_device_first_number))
+  os.environ['CUDA_DEVICE'] = cuda_device
+  ```
+
+  duplicated identically in `two_point.py`, `two_point_multiple_data.py`,
+  `distortion.py` and `distortion_multiple_data.py` (the same
+  four-way duplication #15 is about merging).
+
+On one node these should be the same number, but nothing enforces that,
+and nothing validates either one against the GPUs actually present. Get
+them out of sync and the failure is not a clear error naming the
+mismatch — it is whatever `CUDA_DEVICE=<out-of-range index>` does to
+`pycuda.autoinit`, which is either an opaque device-ordinal error or,
+worse, two ranks silently landing on the *same* device (e.g. `-np 2`
+against the default `number_of_cuda_devices: 4` on this single-GPU GTX
+970 workstation: rank 0 gets device 0, which exists; the same command
+with a device that happens to exist but is shared silently corrupts
+nothing per se but duplicates work on one GPU while the run *looks*
+like it used two). That silent-wrong-answer shape is the same category
+of bug as #9c and #16, just for device assignment instead of buffer
+sizing.
+
+**The fix direction is the same as #2 and #16: stop asking the user to
+state a machine fact that the machine can report itself.** The number of
+CUDA devices on a node is `pycuda.driver.Device.count()` (or
+`nvidia-smi -L`), not something that belongs in a project config file at
+all — `number_of_cuda_devices` can be queried at startup instead of
+configured, the same argument already applied to `max_lenght` (#2) and
+proposed for `number_of_neighs` (#16). That removes one of the two
+places, but doesn't by itself resolve the real multi-node case: MPI does
+not tell a rank "how many ranks share my node" without extra work
+(`MPI.COMM_WORLD.Split_type(MPI.COMM_TYPE_SHARED)` gives a per-node
+communicator whose local rank/size is the right thing to modulo against,
+*instead of* the global `mpi_rank`/a configured per-node count). That
+Split_type call is the actual fix for "assign ranks to local GPUs
+correctly on multi-node jobs" — `number_of_cuda_devices` as a config
+value is a manual, unchecked stand-in for information MPI can provide
+directly.
+
+**Short of that rewrite, a cheap improvement:** validate at startup, in
+each driver, that `mpi_size` is consistent with the queried device count
+(e.g. `mpi_size <= device_count` for a single-node run, or divides evenly
+by it for multi-node with one rank per GPU) and fail with a message
+naming both numbers, instead of leaving a silent mismatch to surface as
+either a CUDA error several layers down or, worse, no error at all.
+
+**Depends on:** nothing structural; the validation-only version is a
+small, independent, low-risk change and could be done first. The full
+`Split_type`-based fix naturally lands together with #15's driver merge,
+since all four drivers currently duplicate the device-assignment logic
+this would replace.
+
 ---
 
 ## Suggested order
