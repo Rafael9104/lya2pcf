@@ -905,13 +905,83 @@ recover that too.
 **Depends on:** (1) and (2) are #4 and #13, and are where the real
 15-minute saving is. (3) is done and helps, but does not change the
 fundamental problem: as long as the file holds pickled Python objects,
-saving is slow and memory-hungry. (4) needs a real fix too, now that its
-limit is clear: stream forests to their eventual file as they're
-extracted (or extract per-file rather than via one `pool.map` across all
-files at once) instead of collecting everything before any of it is
-saved -- otherwise extraction itself remains bounded by total dataset
-size, independent of `--split-number`, which matters directly for a
-~40 GB run.
+saving is slow and memory-hungry.
+
+**(4), the actual fix, done 2026-09-18** on branch
+`refactor/pixel-buffer-zones` (same branch as #15, since it grew out of
+reviewing that work): `delta_reader.py` now extracts in two passes
+instead of one `pool.map` over everything.
+
+- **Pass 1**, `record_pixel_only`: reads only each file's RA/DEC (no
+  delta/weight/lambda arrays, no `quasar` objects) to learn which output
+  pixels it contributes to and how many forests each gets. Cheap enough
+  to run over the whole dataset up front. **One input file does not
+  necessarily map to one output pixel** -- checked on real data before
+  assuming otherwise: one DR1 file spans 4 distinct pixels at the
+  default `nside=32`. Also checked whether a pixel could be split across
+  *different* input files (it would break the one-pixel-one-file
+  invariant `data_index.npy`/`pixel_partition.py` depend on) -- not
+  observed on the real DR1 set (every pixel came from exactly one file,
+  consistent with DESI's file-level pixelization being coarser than this
+  `nside`), but the design does not actually depend on that holding:
+  the census is a true many-to-many map, built the same way regardless.
+- From the census, the pixel -> output-file split is decided exactly as
+  before (`np.array_split` on the sorted pixel list) -- same chunks,
+  same `pixel_file` mapping, verified byte-identical to the old
+  single-pass code on the real DR1 set (see below).
+- **Pass 2** extracts and saves one output chunk at a time: only the
+  files that chunk's pixels actually need are read, only that chunk's
+  forests are ever resident, and `data*.npy` is written and freed
+  (`del subdata`) before the next chunk starts. This is genuinely
+  sequential -- chunk 2 cannot start until chunk 1 is on disk and gone.
+- **Cost of the two-pass split:** a file whose pixels land in more than
+  one output chunk gets re-extracted once per chunk it feeds (confirmed
+  happening on the real DR1 set at `--split-number 4`: 2 of the 4 files
+  got read twice). Wasteful when it happens, not a correctness problem
+  either way -- the alternative (grouping by input file instead of by
+  pixel range) avoids re-reads entirely but gives up `--split-number`'s
+  contiguous-pixel-range property for output chunks, and that property
+  is already unreliable for its one purpose (buffer locality) per #15's
+  own RING-ordering caveat, so it was not judged worth trading pixel-
+  range chunking away for.
+- **`--statistics`'s neighbour count needed the same buffer-zone
+  treatment `two_point.py`/`distortion.py` got in #15**, for the same
+  reason: computed one chunk at a time now (to stay out of the
+  "everything in memory" business this item is about), a forest's
+  `neighborhood()` call would otherwise only see its own chunk, which is
+  exactly the missing-neighbour bug #15 fixed for the correlation
+  drivers, reintroduced here for the diagnostic pass. Fixed the same
+  way, reusing `pixel_partition.find_buffer_pixels`/`load_rank_data`
+  directly rather than a second implementation.
+
+**Verified against the real DR1 set** (`git worktree` of the pre-change
+commit as the old baseline, same data, `--split-number 4` both ways):
+
+- `data_index.npy` (`pixel_file` and `min_distance`) byte-identical
+  between old and new.
+- Every one of the 4 output `data*.npy` files has identical pixel sets,
+  identical forest counts, and identical forest identities (compared by
+  `forest.name`) between old and new.
+- Re-ran #15's own per-forest neighbour-set verification (see #15) with
+  the new extraction's output: still an exact match against the 1-file
+  ground truth, 320,330 pair-links, 0 missing, 0 spurious -- confirms
+  this change didn't disturb what #15 already fixed.
+- `--statistics`'s new buffer-aware neighbour count: `sum(neighbors) =
+  309425` on the real DR1 set -- an exact match to the figure already on
+  record above ("1446 forests carrying 309,425 neighbour entries"),
+  confirming the chunk-by-chunk buffered computation reproduces the old
+  whole-dataset computation exactly, not just approximately.
+- **Not demonstrated empirically:** the actual memory saving. The DR1
+  test set (~50 MB of delta files) is dominated by Python/numpy/fitsio
+  import overhead (~300 MB) either way -- measured peak RSS was, if
+  anything, marginally *higher* for the new code on this tiny set
+  (315.0 MB vs 311.7 MB old), which is expected noise at a scale far
+  below where the fix matters, not a regression. The claim that peak
+  memory is now bounded by one chunk's data rather than the whole
+  dataset rests on reading `pool.map`/`del` semantics (deterministic
+  language behaviour, not scale-dependent), the same way the original
+  problem was found -- not on a large-scale measurement, which nothing
+  available here could produce.
 
 ## 15. Merge the `*_multiple_data` drivers, and add a buffer zone so no pair is missed
 
