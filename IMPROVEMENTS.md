@@ -4,13 +4,24 @@ Working notes from 2026-09-10. Not committed to git by default (personal
 planning doc, not project documentation) — delete, commit, or move it
 wherever you like.
 
-## Open issues (2026-09-18)
+## Still to do (2026-09-18)
 
-- [#1](https://github.com/Rafael9104/lya2pcf/issues/1) — number_of_neighs
-  causes an error → item #16 below.
-- [#16](https://github.com/Rafael9104/lya2pcf/issues/16) — bring this
-  file up to date (done-markers, stale PR statuses, README's Things to
-  do) → this housekeeping pass, PR #17.
+Every other item on this list is done. Remaining:
+
+- **#4** — In-memory pipeline (skip `data.npy` round-trip)
+- **#6** — Single host-memory copy shared across multiple GPUs (one node)
+- **#11** — Add a rebinning (coadding) procedure to lya2pcf
+- **#13** — Forests are padded to `max_lenght`, wasting a large share of
+  GPU memory
+- **#14** — `np.save` of the forest objects is slow and spikes RAM at
+  scale (partially addressed — see the item for what's left)
+- **#15** — Merge the `*_multiple_data` drivers, and add a buffer zone
+  so no pair is missed
+- **#16** — `number_of_neighs` should be derived from the data, not a
+  config guess ([open issue #1](https://github.com/Rafael9104/lya2pcf/issues/1))
+- **#17** — Multi-GPU runs split "how many GPUs" across two unrelated
+  places
+- **#18** — mpi4py is a hard dependency even for a single process
 
 ## 1. `src/lya2pcf/` layout + pip-installable package
 
