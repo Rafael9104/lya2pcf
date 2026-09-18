@@ -12,29 +12,33 @@ then move to the downloaded directory
 $ cd lya2pcf/
 ```
 
-`requirements.txt` pins `python==3.11` (mpi4py does not support anything newer),
-so install into a fresh, dedicated environment rather than whatever conda
-environment happens to be active -- installing into an existing environment
-with a different Python version will either fail or downgrade it. This also
-pulls in the needed libraries: `numpy`, `scipy`, `astropy`, `numba`, `healpy`,
-`mpi4py`, `fitsio`, and `pycuda` for the GPU path.
-```
-$ conda create -n lya2pcf --file requirements.txt
-$ conda activate lya2pcf
-```
-Currently, latest version of healpy is not in conda, therefore you need to install it with pip
-```
-pip install --force-reinstall healpy numpy==1.26.4
-```
-Then install lya2pcf itself into that same environment (editable, so changes to the source take effect immediately):
+Install lya2pcf into a virtual environment of your choice (conda, venv, or
+otherwise -- pip resolves every dependency itself, including `mpi4py`,
+`healpy` and `fitsio`, so no separate conda install step is needed):
 ```
 $ pip install -e .
 ```
-`requirements.txt` already installs `pycuda` above; the `pip install -e .[gpu]`
-form (pulling `pycuda` in through pip instead) is only needed if you are
-setting up without conda, e.g. a plain virtualenv. Either way this puts the
-`lya2pcf-*` commands used below on your `PATH`, and makes `lya2pcf` importable
-as a library from any directory.
+This is enough for the CPU correlation path and the extraction/post-processing
+steps. Anywhere you will use a GPU -- the correlation's `--gpu` path, and the
+distortion matrix, which is GPU-only -- pull in `pycuda` too:
+```
+$ pip install -e ".[gpu]"
+```
+`pycuda` has no prebuilt wheel: it compiles against whatever CUDA toolkit
+(`nvcc` plus headers) is already on the machine, so that needs to be in
+place first (a module load on a cluster, or the CUDA toolkit installed
+locally) -- `pip` cannot supply it.
+
+On an MPI cluster, `mpi4py`'s wheel links whatever MPI implementation it
+finds on the library search path at import time, which is not necessarily
+the cluster's own Slurm/fabric-aware MPI. To force it to build against the
+`mpicc` actually on `PATH` (matching whatever `mpirun`/`srun` will launch
+with) instead of using the prebuilt wheel:
+```
+$ pip install --no-binary mpi4py -e ".[gpu]"
+```
+Either way this puts the `lya2pcf-*` commands used below on your `PATH`,
+and makes `lya2pcf` importable as a library from any directory.
 
 ## Usage
 
@@ -65,7 +69,7 @@ To compute the distortion matrix you need to run
 ```
 $ mpirun -np NUMBER_OF_CORES lya2pcf-distort
 ```
-it will produce the file `distortion.npy` in the directory `corr_dir`. CPU version is not implemented. In the case that you are using more than one `data#.npy` file where you stored the deltas, you need to compute the distortion with the following command instead:
+it will produce the file `distortion.npy` in the directory `corr_dir`. The distortion matrix is GPU-only by design; there is no CPU path. In the case that you are using more than one `data#.npy` file where you stored the deltas, you need to compute the distortion with the following command instead:
 
 ```
 $ mpirun -np NUMBER_OF_CORES lya2pcf-distort-multi
