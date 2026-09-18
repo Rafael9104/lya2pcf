@@ -970,7 +970,14 @@ checking they agree:
   four-way duplication #15 is about merging).
 
 On one node these should be the same number, but nothing enforces that,
-and nothing validates either one against the GPUs actually present. Get
+and nothing validates either one against the GPUs actually present. The
+two use cases this actually has to cover: local single-GPU tests on this
+workstation (`-np 1`, one device), and production runs across several
+nodes with 4 GPUs each (`number_of_cuda_devices: 4`, `-np` a multiple of
+4) — the default in `parameters.yml` already reflects that production
+topology, not an arbitrary number. It is precisely the switch between
+these two cases (or a typo in `-np` on the production cluster) that has
+no safeguard today. Get
 them out of sync and the failure is not a clear error naming the
 mismatch — it is whatever `CUDA_DEVICE=<out-of-range index>` does to
 `pycuda.autoinit`, which is either an opaque device-ordinal error or,
