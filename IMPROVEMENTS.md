@@ -15,8 +15,6 @@ Every other item on this list is done. Remaining:
   GPU memory
 - **#14** — `np.save` of the forest objects is slow and spikes RAM at
   scale (partially addressed — see the item for what's left)
-- **#15** — Merge the `*_multiple_data` drivers, and add a buffer zone
-  so no pair is missed
 - **#16** — `number_of_neighs` should be derived from the data, not a
   config guess ([open issue #1](https://github.com/Rafael9104/lya2pcf/issues/1))
 - **#17** — Multi-GPU runs split "how many GPUs" across two unrelated
@@ -988,6 +986,102 @@ takes a list of files and a buffer policy replaces all four scripts, and
 the `2pla.py` "everything in one file" case becomes just the special
 case of one file with an empty buffer.
 
+**Done 2026-09-18** on branch `refactor/pixel-buffer-zones` (issue #20,
+PR #21). `two_point_multiple_data.py` and `distortion_multiple_data.py`
+are deleted; `two_point.py` and `distortion.py` now handle one file or
+many identically. The "single-file" case really is just the general
+case with an empty buffer, as predicted -- no special-casing needed
+anywhere in the drivers.
+
+One deviation from the plan above: the buffer is built from **pixel**
+centers via `query_disc`, not by recomputing each forest's own
+`neigh_pixels` as the "`delta_reader.py` used to store `neigh_pixels`
+per forest..." note suggested. Coarser (one `query_disc` call per owned
+pixel rather than per forest) and cheaper, and still exact given the
+`max_pixrad` margin described below -- a forest-level recomputation
+would only buy tighter buffers, not correctness, so wasn't worth the
+extra cost here.
+
+**How work is split, settled as: pixels across ranks, files loaded
+per-rank on demand.** Considered splitting files across ranks instead
+(closer to what `*_multiple_data.py` already did) — rejected because it
+leaves ranks idle whenever there are fewer files than ranks, including
+the single-file case, which is common (small test runs, `--split-number`
+left at its default of 1). Pixels split evenly across every rank
+(`np.array_split` on the sorted global pixel list, same convention
+`delta_reader.py` already uses to build files) works for any files/ranks
+ratio, including more ranks than files; each rank then loads only
+the `data*.npy` files its own pixels and their buffer actually touch,
+not the whole dataset. New shared module `pixel_partition.py` holds
+this (`assign_pixels`, `find_buffer_pixels`, `load_rank_data`), used by
+both drivers.
+
+**The buffer**, per pixel, is `query_disc` centered on that pixel with
+radius `angmax + healpy.max_pixrad(nside)` — the margin matters:
+`query_disc` is evaluated from the pixel's *center*, but a forest can
+sit anywhere within it, so the search has to reach `max_pixrad` further
+than `angmax` alone to guarantee no real neighbour outside the pixel is
+missed. `max_pixrad(32)` is small (~2 arcmin) next to a typical `angmax`
+(~3 degrees) but there is no reason to accept an inexact margin when an
+exact one is one function call away.
+
+**A second thing this needed that didn't exist yet: a globally
+consistent `angmax`.** Each of the old `*_multiple_data.py` ranks
+computed its own `angmax` from the minimum comoving distance in *its own*
+loaded files only — a latent inconsistency (not previously called out in
+this item, found while implementing it): a rank whose local minimum
+happened to be larger than the true dataset-wide minimum would compute
+too small an `angmax`, searching a narrower disc than the data actually
+requires and silently missing legitimate neighbours near the edge of
+that narrower disc — the same failure shape as the missing-pairs bug
+this item is about, from a different cause. Fixed by having
+`delta_reader.py`/`delta_reader_eboss.py` persist the dataset-wide
+`min_distance` they already compute (previously printed and discarded)
+into a new `data_index.npy`, alongside a `pixel -> file number` map
+built for free while writing `data*.npy`. Every rank derives the same
+`angmax` from it. `min_distance` is saved rather than `angmax` itself,
+so a driver run with a different `rtmax` later still gets the `angmax`
+that setting actually implies, rather than one baked in at extraction
+time.
+
+**Verified two ways on the real DR1 set** (4 files, `--split-number 4`,
+against a 1-file extraction of the same data as ground truth):
+
+- Directly, bypassing the drivers: for every one of the 1446 forests,
+  compared its neighbour set (`forest.neighborhood(data, angmax)`,
+  matched by `forest.name`) between the 1-file dataset and the 4-file
+  dataset loaded through `pixel_partition` for `mpi_size=4`. Exact match
+  for all 1446 forests -- 320,330 total pair-links either way, 0 missing,
+  0 spurious. This is the same measurement #15 originally made as an
+  aggregate `w_hist` sum (24.08% lost); checking every forest's
+  neighbour *set* individually is a strictly stronger test than an
+  aggregate total, which can hide errors that cancel.
+- End to end through the real CLI: `mpirun -np 3 lya2pcf-correlate --cpu`
+  and `mpirun -np 3 lya2pcf-distort` against the 4-file split, both
+  completing correctly (6+5+5 pixels split exhaustively across the 3
+  ranks, sane non-empty output, no NaNs in the distortion matrix).
+- Also checked pixel ownership is exhaustive and non-overlapping across
+  every rank count tried (1, 2, 3, 4, 5, 8 -- including more ranks than
+  the 4 files, the case that would have starved ranks under a
+  files-across-ranks split).
+
+**Known limitation, not fixed here:** `assign_pixels` splits the
+globally *sorted* pixel list into contiguous chunks, same as
+`delta_reader.py` does for files, on the assumption that this keeps a
+rank's buffer needs local to a handful of nearby files. That assumption
+depends on healpix pixel *index* proximity tracking angular proximity,
+which is only true for `nest=True` ordering — `forest_class.py` calls
+`healpy.ang2pix`/`query_disc` without `nest=True`, i.e. RING ordering,
+where pixels in the same latitude ring have nearby indices but adjacent
+rings do not. So a rank's contiguous pixel range is not guaranteed to be
+a spatially compact patch of sky, and in the worst case its buffer could
+span many more files than the "just the neighbouring one or two" case
+this design is optimized for. Not a correctness problem (verified
+above), only a possible efficiency one at real scale (the ~40 GB
+production case) that switching to NESTED ordering would fix -- a
+bigger, separate change (touches every `pix = healpy.ang2pix(...)` call
+site and anything that assumes RING) that is not part of this item.
+
 ## 16. `number_of_neighs` should be derived from the data, not a config guess
 
 Tracked as GitHub issue #1 ("number_of_neighs causes an error"), open
@@ -1119,10 +1213,14 @@ naming both numbers, instead of leaving a silent mismatch to surface as
 either a CUDA error several layers down or, worse, no error at all.
 
 **Depends on:** nothing structural; the validation-only version is a
-small, independent, low-risk change and could be done first. The full
-`Split_type`-based fix naturally lands together with #15's driver merge,
-since all four drivers currently duplicate the device-assignment logic
-this would replace.
+small, independent, low-risk change and could be done first.
+
+**#15's driver merge (done) halved this duplication, not eliminated
+it.** Four copies of the device-assignment line became two
+(`two_point.py`, `distortion.py`) — the merge only combined each
+driver with its own `*_multiple_data` twin, not the two-point and
+distortion drivers with each other, so the `Split_type`-based fix still
+has two call sites to replace, not one.
 
 ## 18. mpi4py is a hard dependency even for a single process
 
@@ -1149,15 +1247,17 @@ rank/size environment variable set by the launcher (`OMPI_COMM_WORLD_SIZE`,
 `PMI_SIZE`, etc.) is present, and fall back to a trivial rank-0-of-1
 stand-in object otherwise that the rest of each driver already treats
 `comm/mpi_rank/mpi_size` as (so the drivers themselves would not need to
-branch — only the setup at the top of each would). This is a smaller,
-narrower version of what #15's driver merge would touch anyway, since
-all four drivers duplicate this same setup block.
+branch — only the setup at the top of each would).
+
+**#15's driver merge (done) halved this duplication too** -- the same
+setup block now exists in two drivers (`two_point.py`, `distortion.py`)
+instead of four, for the same reason as #17's note above.
 
 **Depends on:** nothing structural; independent of #17, though both are
 about the same "how many processes/GPUs" question from different
 angles — #17 is about the count itself being split across two places,
 this is about the cost of requiring MPI at all for the trivial case of
-one process. Natural to land together with #15's driver merge.
+one process.
 
 ---
 

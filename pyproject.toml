@@ -31,9 +31,7 @@ gpu = ["pycuda"]
 lya2pcf-extract = "lya2pcf.delta_reader:main"
 lya2pcf-extract-eboss = "lya2pcf.delta_reader_eboss:main"
 lya2pcf-correlate = "lya2pcf.two_point:main"
-lya2pcf-correlate-multi = "lya2pcf.two_point_multiple_data:main"
 lya2pcf-distort = "lya2pcf.distortion:main"
-lya2pcf-distort-multi = "lya2pcf.distortion_multiple_data:main"
 lya2pcf-post = "lya2pcf.post_processing:main"
 
 [tool.setuptools.packages.find]

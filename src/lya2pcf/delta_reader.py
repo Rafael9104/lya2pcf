@@ -210,12 +210,25 @@ def main():
 
     pixels_partial = np.array_split(list_of_pixels, args.split_number)
     i=1
+    pixel_file = {}
     for subset in pixels_partial:
         subdata = {x: data[x] for x in subset}
         np.save(os.path.join(args.data_dir, 'data' + str(i)), subdata)
+        for pixel in subset:
+            pixel_file[int(pixel)] = i
         i+=1
         for pixel in subset:
             data.pop(pixel)
+
+    # Needed by the multi-file drivers (two_point.py, distortion.py) to
+    # split pixels across MPI ranks and load only the data*.npy files a
+    # rank actually needs -- its own pixels plus a buffer of neighbouring
+    # ones -- instead of the whole dataset. min_distance is saved rather
+    # than the angmax derived from it, so a driver run with a different
+    # rtmax later still gets the angmax that setting actually implies.
+    # See IMPROVEMENTS.md #15.
+    np.save(os.path.join(args.data_dir, 'data_index'),
+            {'pixel_file': pixel_file, 'min_distance': min_distance})
 
     print("The largest forest has ", max_lenght, " data points.")
     print("The number of forests is:", j)
