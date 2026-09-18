@@ -12,22 +12,29 @@ then move to the downloaded directory
 $ cd lya2pcf/
 ```
 
-Install the needed libraries that include: `numpy`, `scipy`, `astropy`, `numba`, `healpy`, `mpy4pi`, `fitsio`. If you will be using a GPU you will
-need `pycuda`. You can install these packages from requiriments.txt file as
+`requirements.txt` pins `python==3.11` (mpi4py does not support anything newer),
+so install into a fresh, dedicated environment rather than whatever conda
+environment happens to be active -- installing into an existing environment
+with a different Python version will either fail or downgrade it. This also
+pulls in the needed libraries: `numpy`, `scipy`, `astropy`, `numba`, `healpy`,
+`mpi4py`, `fitsio`, and `pycuda` for the GPU path.
 ```
-$ conda install --yes --file requirements.txt
+$ conda create -n lya2pcf --file requirements.txt
+$ conda activate lya2pcf
 ```
 Currently, latest version of healpy is not in conda, therefore you need to install it with pip
 ```
 pip install --force-reinstall healpy numpy==1.26.4
 ```
-Then install lya2pcf itself (editable, so changes to the source take effect immediately):
+Then install lya2pcf itself into that same environment (editable, so changes to the source take effect immediately):
 ```
 $ pip install -e .
 ```
-or, on a machine with a GPU, `pip install -e .[gpu]` to also pull in `pycuda`. This
-puts the `lya2pcf-*` commands used below on your `PATH`, and makes `lya2pcf`
-importable as a library from any directory.
+`requirements.txt` already installs `pycuda` above; the `pip install -e .[gpu]`
+form (pulling `pycuda` in through pip instead) is only needed if you are
+setting up without conda, e.g. a plain virtualenv. Either way this puts the
+`lya2pcf-*` commands used below on your `PATH`, and makes `lya2pcf` importable
+as a library from any directory.
 
 ## Usage
 
