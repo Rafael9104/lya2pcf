@@ -1,9 +1,18 @@
 # -*- coding: utf-8 -*-
-import parameters as params
+import sys
+
 import healpy
 import numpy as np
 from healpy import query_disc
-# import cosmology
+
+from . import parameters as params
+
+# data*.npy files pickle quasar objects under whatever module path
+# forest_class had at extraction time. Older files (from before the move
+# into the lya2pcf package) reference the flat top-level `forest_class`
+# module; this alias lets them still unpickle, since pickle resolves a
+# module name against sys.modules before touching sys.path.
+sys.modules.setdefault('forest_class', sys.modules[__name__])
 
 
 class quasar(object):

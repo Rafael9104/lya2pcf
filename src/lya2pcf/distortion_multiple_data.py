@@ -8,13 +8,13 @@ import os
 import time
 
 import numpy as np
-import parameters as params
-from forest_class import quasar
-
 from mpi4py import MPI
 
+from . import parameters as params
+from .forest_class import quasar
 
-if __name__ == '__main__':
+
+def main():
 
     comm = MPI.COMM_WORLD
     mpi_rank = comm.Get_rank()
@@ -54,7 +54,7 @@ if __name__ == '__main__':
     directory_split = comm.scatter(directory_split, root = 0)
 
     # Moving data dict to the correlation_procedures module
-    import distortion_procedures_pycuda as distortion
+    from . import distortion_procedures_pycuda as distortion
 
     name_partials = 'distortion_pixel_'
 
@@ -135,3 +135,7 @@ if __name__ == '__main__':
 
     if mpi_rank == 0:
             np.save(os.path.join(params.corr_dir, 'distortion'), distortion_total/weight_total[:, None])
+
+
+if __name__ == '__main__':
+    main()

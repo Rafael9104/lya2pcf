@@ -9,10 +9,34 @@ import os
 import numpy as np
 import yaml
 
-_config_path = os.environ.get('LYA2PCF_CONFIG', 'parameters.yml')
+_CONFIG_ENV_VAR = 'LYA2PCF_CONFIG'
+_config_path = os.environ.get(_CONFIG_ENV_VAR, 'parameters.yml')
 
-with open(_config_path) as _f:
-    _cfg = yaml.safe_load(_f)
+try:
+    with open(_config_path) as _f:
+        _cfg = yaml.safe_load(_f)
+except FileNotFoundError:
+    _from = ('the %s environment variable' % _CONFIG_ENV_VAR
+              if _CONFIG_ENV_VAR in os.environ else
+              'the default filename (%s is not set)' % _CONFIG_ENV_VAR)
+    raise FileNotFoundError(
+        "lya2pcf could not find its config file.\n"
+        "\n"
+        "  looked for : %r\n"
+        "  resolved to: %s\n"
+        "  from       : %s\n"
+        "  cwd        : %s\n"
+        "\n"
+        "parameters.yml is read from the current directory by default, "
+        "not from wherever lya2pcf itself is installed -- so this usually "
+        "means the command was run from the wrong directory. Either run it "
+        "from the directory holding your parameters.yml, or point %s at "
+        "one explicitly:\n"
+        "\n"
+        "  %s=/path/to/parameters.yml <command>\n"
+        % (_config_path, os.path.abspath(_config_path), _from, os.getcwd(),
+           _CONFIG_ENV_VAR, _CONFIG_ENV_VAR)
+    ) from None
 
 # IO parammeters
 data_dir = _cfg['data_dir']

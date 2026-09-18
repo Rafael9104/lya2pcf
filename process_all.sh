@@ -1,15 +1,19 @@
 #!/bin/bash
-#This script executes all the necessary steps to obtain 
-#the correlation, covariance and distortion matrices 
+#This script executes all the necessary steps to obtain
+#the correlation, covariance and distortion matrices
 #given some delta files.
+#
+#Requires the package to be installed first: pip install -e . (or
+#pip install -e .[gpu] for the GPU path), which provides the
+#lya2pcf-* commands used below.
 
-python delta_reader.py --delta-dir ./deltas
-#python delta_reader.py --delta-dir ./deltas --split-number 30
-#python delta_reader_eboss.py --delta-dir ./deltas
+lya2pcf-extract --delta-dir ./deltas
+#lya2pcf-extract --delta-dir ./deltas --split-number 30
+#lya2pcf-extract-eboss --delta-dir ./deltas
 
-python 2pla.py --gpu --two-point
-#mpirun -np 8 python 2pla.py --cpu
+lya2pcf-correlate --gpu
+#mpirun -np 8 lya2pcf-correlate --cpu
 
-python post_processing.py
+lya2pcf-post
 
-python distortion.py
+lya2pcf-distort

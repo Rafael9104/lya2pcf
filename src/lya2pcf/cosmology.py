@@ -5,7 +5,7 @@ import numpy as np
 from scipy import integrate, interpolate
 from numba.core.decorators import jit
 from numba import vectorize, float64,float32
-import parameters as params
+from . import parameters as params
 
 @jit()
 def E(z):

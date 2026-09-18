@@ -1,0 +1,43 @@
+[build-system]
+requires = ["setuptools>=61"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lya2pcf"
+version = "0.1.0"
+description = "Computes the correlation functions of the Lyman-alpha forest."
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+dependencies = [
+    "numpy",
+    "scipy",
+    "matplotlib",
+    "astropy",
+    "numba",
+    "healpy",
+    "mpi4py",
+    "fitsio",
+    "pyyaml",
+]
+
+[project.optional-dependencies]
+# Only the GPU-side modules (gpu_support, correlation_procedures_pycuda,
+# distortion_procedures_pycuda) import pycuda; the CPU correlation path and
+# the extraction/post-processing steps do not need it.
+gpu = ["pycuda"]
+
+[project.scripts]
+lya2pcf-extract = "lya2pcf.delta_reader:main"
+lya2pcf-extract-eboss = "lya2pcf.delta_reader_eboss:main"
+lya2pcf-correlate = "lya2pcf.two_point:main"
+lya2pcf-correlate-multi = "lya2pcf.two_point_multiple_data:main"
+lya2pcf-distort = "lya2pcf.distortion:main"
+lya2pcf-distort-multi = "lya2pcf.distortion_multiple_data:main"
+lya2pcf-post = "lya2pcf.post_processing:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+lya2pcf = ["cuda_kernels.cpp"]

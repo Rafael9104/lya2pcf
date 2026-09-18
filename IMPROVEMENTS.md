@@ -76,6 +76,99 @@ go — but check before assuming that of anything else.
 otherwise you restructure imports once for packaging and again for config
 loading.
 
+**Done 2026-09-17** on branch `feat/src-layout`. Everything moved into
+`src/lya2pcf/`, `import X` became `from . import X` throughout, and
+`pyproject.toml` gives console scripts `lya2pcf-extract[-eboss]`,
+`lya2pcf-correlate[-multi]`, `lya2pcf-distort[-multi]`, `lya2pcf-post`
+(the "several entry points" option, since the drivers are still
+separate — see #15). `2pla.py` / `2pla_multiple_data.py` are renamed to
+`two_point.py` / `two_point_multiple_data.py`, since `2pla` cannot be a
+Python module name (`import 2pla` is a syntax error) and so cannot back
+a `module:function` entry point. `process_all.sh` and the README now use
+the installed commands; the analysis notebook's import cell points at
+`lya2pcf.parameters` / `lya2pcf.plot_auxiliars` instead of the flat
+modules.
+
+`delta_reader.py` and `delta_reader_eboss.py` ran their argparse/extraction
+logic at module import time, which an installed entry point cannot call —
+wrapped in `main()`, same for the `if __name__ == '__main__':` bodies of
+the other drivers. `record_from_deltas` stays a top-level function (needed
+as-is for `multiprocessing.Pool.map` to pickle it by qualified name).
+
+**The library API from the "design it as a library" section above is
+done, except the part deferred to #4.** `correlation_procedures_pycuda.py`
+now has a standalone `upload_forests(data, pixel_list) -> ForestBuffers`
+(a dataclass of the device pointers and `max_lenght`), with `init()`
+calling it and unpacking the result into its existing globals so
+`two_point_per_pixel` is untouched. `gpu_support.compile_kernels(path)`
+wraps the `SourceModule` + `-DMYFLOAT` step, defaulting `path` to the
+package's own `cuda_kernels.cpp` via `importlib.resources`; both
+`correlation_procedures_pycuda.py` and `distortion_procedures_pycuda.py`
+now call it instead of each separately opening the file and calling
+`check_precision_supported()`. `distortion_procedures_pycuda.init()` was
+deliberately *not* split into an `upload_forests`-style function: its
+buffers (`etas12/21/...`, `x12/y12/z12/r12`) are distortion-specific, not
+the generic per-forest upload a different correlation would reuse.
+`quasar`, `cosmology` and `parameters` (the config loader) are exposed at
+`lya2pcf.__init__`, deliberately excluding `gpu_support` and the two
+`*_pycuda` modules — they import `pycuda` at module level, so re-exporting
+them from `__init__.py` would make `import lya2pcf` fail on CPU-only
+nodes; a caller that needs them imports the submodule directly, same as
+today's scripts already do conditionally on `--cpu`/`--gpu`. Delta
+extraction returning a `data` dict in memory is explicitly left for #4;
+`delta_reader.py` still only writes `data*.npy`.
+
+The dead three-point hooks noted above (`numpix_mu`, `numpix_theta`,
+`numpix_d`, `precompute_distance_and_angles`) were moved as-is, not
+removed — this PR is the file move, not a cleanup pass.
+
+**Breaking change for existing `data*.npy` files.** These pickle `quasar`
+objects tagged with whatever module path `forest_class` had at extraction
+time. A file written before this move references the flat `forest_class`
+module, which no longer exists as a top-level import. Old files still load
+because `forest_class.py` now does
+`sys.modules.setdefault('forest_class', sys.modules[__name__])` on import
+— pickle resolves a module name against `sys.modules` before touching
+`sys.path`, and every driver already imports `forest_class` before calling
+`np.load(..., allow_pickle=True)` (this is, in fact, why `two_point.py`
+imports `quasar` without otherwise using it — the existing code already
+relied on this same trick for a different reason). **Verified**: loaded
+the pre-existing `deltas_lya2pcf/data1.npy` (committed before this move)
+successfully after the change; `forest.__class__.__module__` correctly
+came back as `lya2pcf.forest_class`. New extractions naturally pickle
+under the new path and need no shim.
+
+**Verified against the real DR1 set** (same 4 files as #15, `deltas_dr1/`,
+`gpu_precision: float32`, GTX 970): extraction reproduces the exact
+figures already on record (1446 forests, longest 967) unchanged.
+Comparing the packaged GPU correlation (`lya2pcf-correlate --gpu`) against
+the pre-move code (`git worktree` of the previous commit, same input,
+same config) over all 16 pixels: total `w_hist` differs by `2.8e-8`
+relative, and the largest single-bin difference is consistent with the
+float32 `atomicAdd` reordering non-determinism already measured in #7 (not
+a regression from the refactor — GPU sums were never expected to be
+bit-identical between runs). Also compiled and ran the distortion kernels
+(`distortion_procedures_pycuda`) through the new shared `compile_kernels()`
+path with no errors.
+
+**CPU correlation path, verified after the fact:** the same-input
+comparison against the pre-move code (`correlation_procedures_cpu.py`,
+only import statements changed) finished after this was first written —
+numba plus the O(forests²) pair search took about 8 minutes on the
+16-pixel DR1 set, run in the background while the rest of this item was
+wrapped up. All 16 pixel histograms (`w_hist` and `dw_hist`) came back
+**bit-identical** to the pre-move code, as expected for a path with no
+logic changes and no floating-point non-determinism (unlike the GPU
+path above, the CPU kernel does an ordinary in-order sum, not atomics).
+
+**Still not executed end-to-end:** `two_point_multiple_data.py`,
+`distortion.py`, `distortion_multiple_data.py`, `delta_reader_eboss.py`
+and `post_processing.py` were checked by reading the diff (import-only
+changes plus the `main()` wrap) and, for `post_processing.py`, by
+actually running `lya2pcf-post` on real correlation output (see above) —
+none of them changed logic, all of them changed only imports and the
+top-level-code-to-function wrapping.
+
 ## 2. `parameters.py` → `parameters.yml`
 
 Replace the star-import global-constants module with a YAML config file
@@ -791,6 +884,142 @@ takes a list of files and a buffer policy replaces all four scripts, and
 the `2pla.py` "everything in one file" case becomes just the special
 case of one file with an empty buffer.
 
+## 16. `number_of_neighs` should be derived from the data, not a config guess
+
+Tracked as GitHub issue #1 ("number_of_neighs causes an error"), open
+since before this list existed. `number_of_neighs` (default 80 in
+`parameters.yml`) is a fixed guess at the largest neighbour count any
+forest will have, used only to size the distortion buffers in
+`distortion_procedures_pycuda.init()` (`le1`-`le4`, `activeBs`,
+`activeBs_index`, `x12/y12/z12/r12`, etc.). Nothing checks that the guess
+holds. `distortion_per_pixel()` computes the *real* per-forest count from
+`forest1.neighborhood(data, angmax)` and uses that directly against
+buffers sized from the config value — already flagged as a silent
+out-of-bounds write in #9c, with mitigation options (assert, debug-mode
+bounds checking, `compute-sanitizer`) listed in #12.
+
+This item is the fix `#9c`/`#12` point at but don't commit to: **don't
+make `number_of_neighs` a better-documented config guess, stop it being
+config at all.** Compute the actual maximum neighbour count from the
+loaded data at the start of the run and size the buffers from that,
+exactly the fix already applied to `max_lenght` in #2 (a static
+`parameters.py` value that turned out to depend on whichever data was
+actually loaded, and is now computed from `data` instead of configured).
+Same argument here: no dataset-dependent quantity should be a fixed
+number in `parameters.yml` when the loaded data can simply be measured
+before the buffers it sizes are allocated.
+
+**The real cost is not the fix, it's the extra pass it requires.**
+Finding the true maximum means running `forest.neighborhood()` — the full
+`query_disc` + pairwise `dot_product` search — over every forest before
+`init()` allocates anything, which is exactly the search `#14` made
+optional behind `--statistics` because it is a large fraction of
+extraction runtime (see `#14`'s measurement: ~36% of extraction time on
+the DR1 set, and it grows with forest density). Options, roughly in order
+of how much they avoid repeating that cost:
+
+- **Reuse `--statistics` output if it's already on disk.** `#14`'s
+  `sizes`/`neighbors` diagnostic files in `data_dir` already contain the
+  neighbour count per forest (unweighted by `reject_fraction`, but
+  `ceil(count * (1 - reject_fraction))` recovers the sizing bound). Read
+  it if present, fall back to computing fresh if not.
+- **Compute it once in `distortion.py`/`distortion_multiple_data.py`
+  before calling `init()`**, over exactly the `data` that run will use
+  (which may be a subset of pixels for the multi-file drivers), rather
+  than requiring a prior `--statistics` extraction. Pays the neighbour
+  search cost once per distortion run instead of guessing it up front,
+  which is strictly better than today's silent-corruption risk, but is
+  the same cost `#14` opted out of paying by default during extraction.
+- **A generous, checked upper bound instead of the exact maximum** — e.g.
+  size from `angmax` and typical forest density rather than a full
+  per-forest scan, with the `#12` host-side assertion catching the rare
+  case it's still wrong. Cheaper, but reintroduces a guess, just a better
+  one; the assertion is what makes that acceptable instead of silent.
+
+Whichever approach, this should replace `number_of_neighs` as a required
+`parameters.yml` key with, at most, an optional override (a ceiling to
+guard against a pathological outlier blowing up memory) — the same
+relationship `parameters.yml` now has with `max_lenght`, which is no
+longer a key there at all.
+
+**Depends on:** conceptually independent, but shares the "measure the
+real neighbour count before allocating" cost with #12 and #15's buffer
+zone (which needs per-forest neighbour-to-pixel info too — see #15's
+notes on `neigh_pixels`), so worth doing alongside either rather than as
+a third separate pass over the same neighbour search.
+
+## 17. Multi-GPU runs split "how many GPUs" across two unrelated places
+
+To run on several GPUs today you set two things that both amount to
+"how many GPUs am I using," in two different places, with nothing
+checking they agree:
+
+- `mpirun -np N` on the command line — the total number of MPI
+  processes/ranks for the whole job.
+- `number_of_cuda_devices` in `parameters.yml` — described in the README
+  as "the number of devices per node," used only to turn an MPI rank into
+  a local CUDA device index:
+
+  ```python
+  cuda_device = str(int(mpi_rank % params.number_of_cuda_devices + params.cuda_device_first_number))
+  os.environ['CUDA_DEVICE'] = cuda_device
+  ```
+
+  duplicated identically in `two_point.py`, `two_point_multiple_data.py`,
+  `distortion.py` and `distortion_multiple_data.py` (the same
+  four-way duplication #15 is about merging).
+
+On one node these should be the same number, but nothing enforces that,
+and nothing validates either one against the GPUs actually present. The
+two use cases this actually has to cover: local single-GPU tests on this
+workstation (`-np 1`, one device), and production runs across several
+nodes with 4 GPUs each (`number_of_cuda_devices: 4`, `-np` a multiple of
+4) — the default in `parameters.yml` already reflects that production
+topology, not an arbitrary number. It is precisely the switch between
+these two cases (or a typo in `-np` on the production cluster) that has
+no safeguard today. Get
+them out of sync and the failure is not a clear error naming the
+mismatch — it is whatever `CUDA_DEVICE=<out-of-range index>` does to
+`pycuda.autoinit`, which is either an opaque device-ordinal error or,
+worse, two ranks silently landing on the *same* device (e.g. `-np 2`
+against the default `number_of_cuda_devices: 4` on this single-GPU GTX
+970 workstation: rank 0 gets device 0, which exists; the same command
+with a device that happens to exist but is shared silently corrupts
+nothing per se but duplicates work on one GPU while the run *looks*
+like it used two). That silent-wrong-answer shape is the same category
+of bug as #9c and #16, just for device assignment instead of buffer
+sizing.
+
+**The fix direction is the same as #2 and #16: stop asking the user to
+state a machine fact that the machine can report itself.** The number of
+CUDA devices on a node is `pycuda.driver.Device.count()` (or
+`nvidia-smi -L`), not something that belongs in a project config file at
+all — `number_of_cuda_devices` can be queried at startup instead of
+configured, the same argument already applied to `max_lenght` (#2) and
+proposed for `number_of_neighs` (#16). That removes one of the two
+places, but doesn't by itself resolve the real multi-node case: MPI does
+not tell a rank "how many ranks share my node" without extra work
+(`MPI.COMM_WORLD.Split_type(MPI.COMM_TYPE_SHARED)` gives a per-node
+communicator whose local rank/size is the right thing to modulo against,
+*instead of* the global `mpi_rank`/a configured per-node count). That
+Split_type call is the actual fix for "assign ranks to local GPUs
+correctly on multi-node jobs" — `number_of_cuda_devices` as a config
+value is a manual, unchecked stand-in for information MPI can provide
+directly.
+
+**Short of that rewrite, a cheap improvement:** validate at startup, in
+each driver, that `mpi_size` is consistent with the queried device count
+(e.g. `mpi_size <= device_count` for a single-node run, or divides evenly
+by it for multi-node with one rank per GPU) and fail with a message
+naming both numbers, instead of leaving a silent mismatch to surface as
+either a CUDA error several layers down or, worse, no error at all.
+
+**Depends on:** nothing structural; the validation-only version is a
+small, independent, low-risk change and could be done first. The full
+`Split_type`-based fix naturally lands together with #15's driver merge,
+since all four drivers currently duplicate the device-assignment logic
+this would replace.
+
 ---
 
 ## Suggested order
@@ -800,9 +1029,9 @@ case of one file with an empty buffer.
 2. ~~**#2 `parameters.yml`**~~ — **done 2026-09-10**, branch
    `feat/parameters-yaml` (stacked on `fix/path-joining`), issue #4,
    PR not yet opened. Also removed the `max_lenght` self-rewrite.
-3. **#1 `src/lya2pcf/` package layout** — do right after #2 so you're not
-   restructuring imports twice. (**#8** was done ahead of it, so imports
-   are already explicit — one less thing for the move to untangle.)
+3. ~~**#1 `src/lya2pcf/` package layout**~~ — **done 2026-09-17**, branch
+   `feat/src-layout`, issue #14. (**#8** was done ahead of it, so imports
+   were already explicit — one less thing for the move to untangle.)
 4. ~~**#3 configurable metadata keys**~~ — **done 2026-09-11**, branch
    `feat/metadata-keys`. `delta_reader_eboss.py` still has its own
    hardcoded names; see #3 for why it was left.

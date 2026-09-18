@@ -1,17 +1,28 @@
 """
-    Device capability and memory checks shared by the GPU backends.
+    Device capability and memory checks shared by the GPU backends, plus the
+    kernel compile step itself.
 
     correlation_procedures_pycuda and distortion_procedures_pycuda compile the
     same kernels and fail in the same two ways — a device that cannot do
     float64 atomics, and buffers that do not fit in device memory — so the
-    checks and their messages live here.
+    checks and their messages live here. Public API: any GPU code built on
+    lya2pcf's forests (a three-point correlation, say) needs the same device
+    checks and the same precision-aware compile step, so both are exported
+    rather than kept private to the two-point path.
 """
-import pycuda.driver as cuda
+import importlib.resources as _resources
 
-import parameters as params
+import pycuda.driver as cuda
+from pycuda.compiler import SourceModule
+
+from . import parameters as params
 
 # atomicAdd(double*, double) was introduced in Pascal.
 _MIN_FLOAT64_CAPABILITY = (6, 0)
+
+# The kernels shipped with lya2pcf itself; a caller compiling its own source
+# passes a different `path` to compile_kernels() instead.
+_DEFAULT_KERNELS = _resources.files(__package__) / 'cuda_kernels.cpp'
 
 
 def _gb(nbytes):
@@ -73,6 +84,33 @@ def memory_message(required, what, hints):
         "%s"
         % (what, _gb(required), _gb(free), device.name(), _gb(total),
            "".join("  - %s\n" % hint for hint in hints)))
+
+
+def compile_kernels(path=None):
+    """Compile a CUDA/C++ source file at the configured gpu_precision.
+
+    Applies `-DMYFLOAT=<float|double>` from `parameters.gpu_precision`, so a
+    kernel file compiled here always agrees with the numpy dtype the rest of
+    lya2pcf uploads to the device (see `parameters.gpu_dtype`).
+
+    `path` defaults to lya2pcf's own cuda_kernels.cpp; pass a different
+    path (str, or anything with a .read_text(), such as an
+    importlib.resources.Traversable) to compile another package's kernels
+    at the same precision instead of hardcoding a type that could silently
+    disagree with this library's buffers.
+
+    Checks device support before compiling, since an unsupported
+    atomicAdd(double*) fails every kernel in the file, not just the one
+    that uses it, with an nvcc error that does not say why.
+    """
+    check_precision_supported()
+    source = path if path is not None else _DEFAULT_KERNELS
+    if hasattr(source, 'read_text'):
+        text = source.read_text()
+    else:
+        with open(source) as f:
+            text = f.read()
+    return SourceModule(text, options=['-DMYFLOAT=' + params.gpu_ctype])
 
 
 def require_memory(required, what, hints):

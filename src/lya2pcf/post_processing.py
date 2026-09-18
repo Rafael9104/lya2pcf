@@ -1,15 +1,16 @@
 """
-    This program takes the histogram files computed from 2pla.py and outputs the
-    correlation, covariance matrix and plots.
+    This program takes the histogram files computed by the correlation step
+    and outputs the correlation, covariance matrix and plots.
 """
 import glob
 import os
 import argparse
 import numpy as np
-import parameters as params
 from numba.core.decorators import jit
 import fitsio
 import warnings
+
+from . import parameters as params
 
 @jit(nopython=True, nogil=True)
 def bin_coordinates(numpix_r_p, numpix_r_t):
@@ -110,9 +111,9 @@ def diag_error(da,we):
     return error, mda
 
 
-if __name__ == '__main__':
+def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-        description='This program takes the histogram files computed from 2pla.py and outputs the correlation.')
+        description='This program takes the histogram files computed by the correlation step and outputs the correlation.')
     parser.add_argument('--write-coordinates', action = 'store_true', required = False,
         help = 'Write arrays with the central values of the coordinates to each point of the correlation function.')
     parser.add_argument('--diagonal-error', action = 'store_true', required = False,
@@ -216,4 +217,8 @@ if __name__ == '__main__':
 
     fits_file.write(table_data, extname='COR', header = header)
     fits_file.close
+
+
+if __name__ == '__main__':
+    main()
  

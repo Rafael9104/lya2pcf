@@ -1,8 +1,9 @@
 import numpy as np
 import time
-import parameters as params
 import math
 from numba.core.decorators import jit
+
+from . import parameters as params
 
 def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux):
     global data
