@@ -884,6 +884,70 @@ takes a list of files and a buffer policy replaces all four scripts, and
 the `2pla.py` "everything in one file" case becomes just the special
 case of one file with an empty buffer.
 
+## 16. `number_of_neighs` should be derived from the data, not a config guess
+
+Tracked as GitHub issue #1 ("number_of_neighs causes an error"), open
+since before this list existed. `number_of_neighs` (default 80 in
+`parameters.yml`) is a fixed guess at the largest neighbour count any
+forest will have, used only to size the distortion buffers in
+`distortion_procedures_pycuda.init()` (`le1`-`le4`, `activeBs`,
+`activeBs_index`, `x12/y12/z12/r12`, etc.). Nothing checks that the guess
+holds. `distortion_per_pixel()` computes the *real* per-forest count from
+`forest1.neighborhood(data, angmax)` and uses that directly against
+buffers sized from the config value — already flagged as a silent
+out-of-bounds write in #9c, with mitigation options (assert, debug-mode
+bounds checking, `compute-sanitizer`) listed in #12.
+
+This item is the fix `#9c`/`#12` point at but don't commit to: **don't
+make `number_of_neighs` a better-documented config guess, stop it being
+config at all.** Compute the actual maximum neighbour count from the
+loaded data at the start of the run and size the buffers from that,
+exactly the fix already applied to `max_lenght` in #2 (a static
+`parameters.py` value that turned out to depend on whichever data was
+actually loaded, and is now computed from `data` instead of configured).
+Same argument here: no dataset-dependent quantity should be a fixed
+number in `parameters.yml` when the loaded data can simply be measured
+before the buffers it sizes are allocated.
+
+**The real cost is not the fix, it's the extra pass it requires.**
+Finding the true maximum means running `forest.neighborhood()` — the full
+`query_disc` + pairwise `dot_product` search — over every forest before
+`init()` allocates anything, which is exactly the search `#14` made
+optional behind `--statistics` because it is a large fraction of
+extraction runtime (see `#14`'s measurement: ~36% of extraction time on
+the DR1 set, and it grows with forest density). Options, roughly in order
+of how much they avoid repeating that cost:
+
+- **Reuse `--statistics` output if it's already on disk.** `#14`'s
+  `sizes`/`neighbors` diagnostic files in `data_dir` already contain the
+  neighbour count per forest (unweighted by `reject_fraction`, but
+  `ceil(count * (1 - reject_fraction))` recovers the sizing bound). Read
+  it if present, fall back to computing fresh if not.
+- **Compute it once in `distortion.py`/`distortion_multiple_data.py`
+  before calling `init()`**, over exactly the `data` that run will use
+  (which may be a subset of pixels for the multi-file drivers), rather
+  than requiring a prior `--statistics` extraction. Pays the neighbour
+  search cost once per distortion run instead of guessing it up front,
+  which is strictly better than today's silent-corruption risk, but is
+  the same cost `#14` opted out of paying by default during extraction.
+- **A generous, checked upper bound instead of the exact maximum** — e.g.
+  size from `angmax` and typical forest density rather than a full
+  per-forest scan, with the `#12` host-side assertion catching the rare
+  case it's still wrong. Cheaper, but reintroduces a guess, just a better
+  one; the assertion is what makes that acceptable instead of silent.
+
+Whichever approach, this should replace `number_of_neighs` as a required
+`parameters.yml` key with, at most, an optional override (a ceiling to
+guard against a pathological outlier blowing up memory) — the same
+relationship `parameters.yml` now has with `max_lenght`, which is no
+longer a key there at all.
+
+**Depends on:** conceptually independent, but shares the "measure the
+real neighbour count before allocating" cost with #12 and #15's buffer
+zone (which needs per-forest neighbour-to-pixel info too — see #15's
+notes on `neigh_pixels`), so worth doing alongside either rather than as
+a third separate pass over the same neighbour search.
+
 ---
 
 ## Suggested order
