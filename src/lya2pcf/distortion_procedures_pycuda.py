@@ -278,9 +278,13 @@ def distortion_per_pixel(forest_list, **kargs):
         total_blocks_y = int(np.ceil(max_lenght / params.distortion_threads_per_block[1]))
         total_blocks_z = int(np.ceil(number_of_neighs / params.distortion_threads_per_block[2]))
         total_blocks_dist = (total_blocks_x, total_blocks_y, total_blocks_z)
-        total_blocks_x2 = int(np.ceil(shape_hist[0]*shape_hist[1] / params.distortion_threads_per_block_2[0]))
-        total_blocks_y2 = int(np.ceil(number_of_neighs / params.distortion_threads_per_block_2[1]))
+        total_blocks_x2 = int(np.ceil(shape_hist[0]*shape_hist[1] / params.threads_per_block_2d[0]))
+        total_blocks_y2 = int(np.ceil(number_of_neighs / params.threads_per_block_2d[1]))
         total_blocks_ordering = (total_blocks_x2, total_blocks_y2, 1)
+        # order_active is 2D (it never reads a z thread/block index), but
+        # pycuda's block= always takes a 3-tuple, so the unused z=1 is
+        # appended here rather than carried in parameters.yml.
+        block_ordering = params.threads_per_block_2d + (1,)
 
         # This kernel precomputes the distances from forest1 to every other forest in its neighborhood
         precompute_distances(max_lenght, base_d, neigh_index_d, neigh_sizes_d, binner_d,
@@ -297,7 +301,7 @@ def distortion_per_pixel(forest_list, **kargs):
             block = params.distortion_threads_per_block, grid = total_blocks_dist)
 
 
-        order_active(activeBs, activeBs_index, numpix_d, base_d, index_j, block=params.distortion_threads_per_block_2, grid=total_blocks_ordering)
+        order_active(activeBs, activeBs_index, numpix_d, base_d, index_j, block=block_ordering, grid=total_blocks_ordering)
 
 
         compute_d(max_lenght, numpix_d, base_d, neigh_index_d, neigh_sizes_d,

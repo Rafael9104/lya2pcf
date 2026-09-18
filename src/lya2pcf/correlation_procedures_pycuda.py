@@ -222,8 +222,13 @@ def two_point_per_pixel(pixel, **kargs):
 
     # Passing data to the GPU
     rmax_d = gpuarray.to_gpu(np.array([params.rpmax,params.rtmax],dtype=myfloat))
-        # Be careful, this can not change unless the kernel procedure change.
-    threads_per_block = (1, 16, 16)
+    # y and z genuinely parallelize the kernel's two strided loops (over
+    # neighbours and over pixels within each neighbour), so they're the
+    # same shared 2D block used for order_active. x must stay 1: the
+    # kernel reads its pixel-in-forest1 index from blockIdx.x, not
+    # threadIdx.x, so blockDim.x > 1 would run the same accumulation
+    # redundantly and double-count into the histogram.
+    threads_per_block = (1,) + params.threads_per_block_2d
 
     for forest1 in data[pixel]:
 
