@@ -4,6 +4,25 @@ Working notes from 2026-09-10. Not committed to git by default (personal
 planning doc, not project documentation) — delete, commit, or move it
 wherever you like.
 
+## Still to do (2026-09-18)
+
+Every other item on this list is done. Remaining:
+
+- **#4** — In-memory pipeline (skip `data.npy` round-trip)
+- **#6** — Single host-memory copy shared across multiple GPUs (one node)
+- **#11** — Add a rebinning (coadding) procedure to lya2pcf
+- **#13** — Forests are padded to `max_lenght`, wasting a large share of
+  GPU memory
+- **#14** — `np.save` of the forest objects is slow and spikes RAM at
+  scale (partially addressed — see the item for what's left)
+- **#15** — Merge the `*_multiple_data` drivers, and add a buffer zone
+  so no pair is missed
+- **#16** — `number_of_neighs` should be derived from the data, not a
+  config guess ([open issue #1](https://github.com/Rafael9104/lya2pcf/issues/1))
+- **#17** — Multi-GPU runs split "how many GPUs" across two unrelated
+  places
+- **#18** — mpi4py is a hard dependency even for a single process
+
 ## 1. `src/lya2pcf/` layout + pip-installable package
 
 Currently everything is a flat collection of scripts at the repo root
@@ -76,7 +95,8 @@ go — but check before assuming that of anything else.
 otherwise you restructure imports once for packaging and again for config
 loading.
 
-**Done 2026-09-17** on branch `feat/src-layout`. Everything moved into
+**Done 2026-09-17** on branch `feat/src-layout`, PR #15, merged into
+`main` 2026-09-18. Everything moved into
 `src/lya2pcf/`, `import X` became `from . import X` throughout, and
 `pyproject.toml` gives console scripts `lya2pcf-extract[-eboss]`,
 `lya2pcf-correlate[-multi]`, `lya2pcf-distort[-multi]`, `lya2pcf-post`
@@ -197,6 +217,23 @@ makes per-run configs easy to version and diff.
 
 **Depends on:** do before item 1's import restructuring settles, since
 every file currently does `from parameters import *`.
+
+**Done 2026-09-10** on branch `feat/parameters-yaml`, issue #4, PR #5,
+merged. `parameters.yml` plus `parameters.py` as the loader, read once
+at import time, with every derived value (`numpix_rp`, `OmDE`, `d_H0`,
+`gammaovertwo`, `la`, `chiquito`, and later `gpu_dtype`/`gpu_ctype` from
+#7) computed from the raw YAML values rather than stored twice.
+`delta_reader.py`'s `max_lenght` self-rewrite via `fileinput` is gone
+entirely — `max_lenght` isn't in the config at all any more, computed
+fresh from whichever data is actually loaded (see #1's `upload_forests`
+and `distortion_procedures_pycuda.init()`), which is what #12 leans on.
+
+One deviation from the plan as originally written: instead of a
+`lya2pcf.config.load(path)` function returning a dataclass/
+`SimpleNamespace`, `parameters.py` itself *is* the loaded config,
+accessed as `params.X` after `import parameters as params` (later
+`from . import parameters as params` once #8 and #1 landed) — simpler,
+and it's what #1's packaging move built on rather than reopening.
 
 ## 3. Generalize hardcoded metadata/column keys (blinding-safe extraction)
 
@@ -339,6 +376,13 @@ output location or worse, files mixed into the wrong directory.
 first PR to build confidence in the new structure, or fine to do
 standalone today regardless of the rest.
 
+**Done 2026-09-10** on branch `fix/path-joining`, issue #2, PR #3,
+merged. Every `data_dir + ...` / `corr_dir + ...` concatenation site
+replaced with `os.path.join(params.data_dir, ...)` /
+`os.path.join(params.corr_dir, ...)`. Reconfirmed with a grep across
+`src/lya2pcf/` after #1's move: no `data_dir +`/`corr_dir +`
+concatenation remains anywhere.
+
 ## 6. Single host-memory copy shared across multiple GPUs (one node)
 
 Current architecture: `2pla.py` is launched under `mpirun -np N`, one MPI
@@ -383,6 +427,12 @@ simplify the process model for other reasons.
 and most architecture-level change on this list — do it last, once the
 rest of the codebase is settled, so you're not restructuring packaging
 *and* the process/memory model at the same time.
+
+(This is the same idea the README's old "Things to do" list had as
+"use multiprocessing for shared memory machines to reduce memory
+usage" — folded in here rather than kept as a separate note, since #6
+already covers it in more depth. See #18 for the README's other
+"Things to do" entry, about not requiring mpi4py for a single process.)
 
 ## 7. float32 vs float64: the CUDA kernel won't build on older GPUs
 
@@ -483,10 +533,18 @@ storage with float64 accumulators for the histogram bins only.
 **The distortion path is deliberately not covered by this setting** —
 see #10, which records why and what it would take.
 
-**Still unverified:** the float64 GPU path cannot be run on this
-workstation at all, so these changes are exercised in float32 only.
-A Pascal-or-newer card needs to confirm float64 still behaves. The
-distortion path is verified as compiling only, never executed here.
+The float64 GPU path could not be run on this workstation at all (Pascal
+or newer only), so these changes were originally exercised in float32
+only, with the distortion path verified as compiling but never executed.
+
+**Resolved 2026-09-18:** Josue confirmed on production Pascal-or-newer
+hardware that both the two-point correlation and the distortion matrix
+run successfully at `gpu_precision: float64`. That was a run-completes
+check, not a numeric comparison against a reference (unlike the float32
+vs CPU comparison already measured above) — worth keeping in mind if a
+result from this path is ever questioned, since "runs" and "produces the
+expected numbers" are still two different claims. See #10 for the
+distortion side of the same confirmation.
 
 **Depends on:** #2 for the config plumbing, otherwise independent.
 
@@ -526,11 +584,12 @@ Three things it flushed out, recorded as #9 below.
 
 ## 9. Things the star-import removal exposed
 
-Found 2026-09-10 while doing #8. None are fixed — recording so they
-aren't lost.
+Found 2026-09-10 while doing #8, recorded here so they weren't lost.
+Status per sub-item: (a) done, (b) resolved with a residual noted below,
+(c) promoted to its own item, #16.
 
-**a. `delta_reader.py` had an undefined name** (fixed as part of #8,
-it was a one-word change): the "no delta files found" branch printed
+**a. `delta_reader.py` had an undefined name — done**, fixed as part of
+#8, it was a one-word change: the "no delta files found" branch printed
 `delta_dir`, which never existed in any namespace — it would have
 raised `NameError` instead of the intended error message. Never caught
 because `import *` makes static checking impossible; `pyflakes` found
@@ -570,6 +629,10 @@ neighbours, which may well be reachable on dense fields or at large
 sizing the arrays from the actual maximum (the same argument as
 `max_lenght` in #2). Before the rename both were spelled
 `number_of_neighs`, which is presumably how it went unnoticed.
+
+**Promoted to its own item — see #16**, which covers deriving
+`number_of_neighs` from the data instead of configuring it (the actual
+fix), rather than just detecting the overrun after the fact.
 
 ## 10. Distortion matrix precision is not configurable (and is memory-bound)
 
@@ -634,8 +697,13 @@ rather than obvious failures:
 
 Verified by running the distortion end to end at float32 on the GTX 970
 (with `number_of_neighs` and `rmax` reduced to fit 4 GB) — the first
-time that path has run on this machine. float64 remains untested here
+time that path has run on this machine. float64 remained untested here
 for the same compute-capability reason as #7.
+
+**Resolved 2026-09-18**, same as #7: Josue confirmed the distortion
+matrix also runs successfully at `gpu_precision: float64` on production
+Pascal-or-newer hardware. As with the two-point side, this confirms the
+run completes, not that its output has been checked against a reference.
 
 ## 11. Add a rebinning (coadding) procedure to lya2pcf
 
@@ -680,28 +748,32 @@ outside their allocations. On a GPU that does not reliably fault — it
 silently corrupts whatever is adjacent, so the run completes and
 produces wrong numbers.
 
-This got much less likely now that `max_lenght` is derived from the
-loaded data rather than carried in a config file (#2), but "less
-likely" is not "detected", and #9c is still live and unfixed.
+**Partially addressed by #2.** The `max_lenght` half of this is no
+longer really live: both `correlation_procedures_pycuda.upload_forests`
+and `distortion_procedures_pycuda.init()` compute `max_lenght` from
+whichever data they are about to pack, in the same function that then
+sizes the buffers from it — so the buffers and the data are sized from
+one measurement by construction, not merely "less likely" to disagree.
+No host-side assertion is needed for that half; there is no longer a
+separate `max_lenght` value that could drift from the data.
 
-**What would help, cheapest first:**
+The `number_of_neighs` half is unaddressed and is where the remaining
+work is — **see #16**, which covers deriving it from the data the same
+way `max_lenght` already is (rather than adding an assertion around a
+config guess that shouldn't exist).
 
-- Assert on the host before launching: the largest forest in `data`
-  must not exceed the `max_lenght` the buffers were built with, and the
-  retained neighbour count must not exceed `number_of_neighs`. This
-  catches both known cases for the price of a couple of comparisons per
-  pixel, and can raise a message naming the offending forest.
+**What would still help, independent of #16, cheapest first:**
+
 - Bounds-check inside the kernels behind a debug flag, with a
   `printf` naming the index and the limit. Too costly for the inner
   loop in production, but a build-time switch makes it usable when
   something looks wrong.
-- Longer term, run the test suite under `compute-sanitizer`
-  (`cuda-memcheck`'s successor), which reports out-of-bounds device
-  writes directly and would have caught #9c without anyone suspecting
-  it.
+- Run the test suite under `compute-sanitizer` (`cuda-memcheck`'s
+  successor), which reports out-of-bounds device writes directly and
+  would have caught #9c without anyone suspecting it.
 
-**Depends on:** nothing; the host-side assertions are small and worth
-doing alongside a fix for #9c.
+**Depends on:** nothing for the two bullets above; the `number_of_neighs`
+piece depends on #16.
 
 ## 13. Forests are padded to max_lenght, wasting a large share of GPU memory
 
@@ -1020,18 +1092,54 @@ small, independent, low-risk change and could be done first. The full
 since all four drivers currently duplicate the device-assignment logic
 this would replace.
 
+## 18. mpi4py is a hard dependency even for a single process
+
+Moved here from the README's old "Things to do" list ("do not call for
+mpi4py when only used with 1 cpu"). Every driver (`two_point.py`,
+`two_point_multiple_data.py`, `distortion.py`,
+`distortion_multiple_data.py`) unconditionally does `from mpi4py import
+MPI` and builds `MPI.COMM_WORLD`, even for a single local process with
+no `mpirun` in sight — that works fine (`COMM_WORLD` is a valid
+size-1 communicator on its own, confirmed while checking mpi4py's pip
+packaging for the install-instructions rewrite), so this is not a
+correctness bug. It is dependency weight: `mpi4py` needs a real MPI
+implementation resolvable on the machine to import at all (see the
+README's install section, and the `--no-binary mpi4py` note for making
+sure it links the right one), which is a real thing to have installed
+just to run one process on one machine with no MPI job in sight — e.g.
+a laptop with no MPI implementation could not `pip install mpi4py`
+usably even for a `--gpu` single-device run that has nothing to
+coordinate.
+
+**Fix direction:** guard the `mpi4py` import and `COMM_WORLD` setup
+behind an actual multi-process check — e.g. only import it when an MPI
+rank/size environment variable set by the launcher (`OMPI_COMM_WORLD_SIZE`,
+`PMI_SIZE`, etc.) is present, and fall back to a trivial rank-0-of-1
+stand-in object otherwise that the rest of each driver already treats
+`comm/mpi_rank/mpi_size` as (so the drivers themselves would not need to
+branch — only the setup at the top of each would). This is a smaller,
+narrower version of what #15's driver merge would touch anyway, since
+all four drivers duplicate this same setup block.
+
+**Depends on:** nothing structural; independent of #17, though both are
+about the same "how many processes/GPUs" question from different
+angles — #17 is about the count itself being split across two places,
+this is about the cost of requiring MPI at all for the trivial case of
+one process. Natural to land together with #15's driver merge.
+
 ---
 
 ## Suggested order
 
 1. ~~**#5 trailing-slash fix**~~ — **done 2026-09-10**, branch
-   `fix/path-joining`, issue #2, PR #3 (open).
+   `fix/path-joining`, issue #2, PR #3, merged.
 2. ~~**#2 `parameters.yml`**~~ — **done 2026-09-10**, branch
    `feat/parameters-yaml` (stacked on `fix/path-joining`), issue #4,
-   PR not yet opened. Also removed the `max_lenght` self-rewrite.
+   PR #5, merged. Also removed the `max_lenght` self-rewrite.
 3. ~~**#1 `src/lya2pcf/` package layout**~~ — **done 2026-09-17**, branch
-   `feat/src-layout`, issue #14. (**#8** was done ahead of it, so imports
-   were already explicit — one less thing for the move to untangle.)
+   `feat/src-layout`, issue #14, PR #15, merged 2026-09-18. (**#8** was
+   done ahead of it, so imports were already explicit — one less thing
+   for the move to untangle.)
 4. ~~**#3 configurable metadata keys**~~ — **done 2026-09-11**, branch
    `feat/metadata-keys`. `delta_reader_eboss.py` still has its own
    hardcoded names; see #3 for why it was left.
@@ -1047,34 +1155,3 @@ this would replace.
    lifetime/cleanup, race conditions between ranks). Do it last, on a
    stable base, and test carefully on a real multi-GPU node before
    trusting results from it.
-
-## Workflow: fork vs. issues on your student's repo
-
-You already push directly to `main` on `Rafael9104/lya2pcf` (recent
-commits like `9040e4b`, `0ce8057` are yours, no fork in between) — so this
-isn't really a "contributing to someone else's project" situation, you
-have write access already.
-
-Given that, and that several of these changes are large and *interdependent*
-(the YAML config change alone touches every file that does
-`from parameters import *`), I'd avoid two extremes:
-
-- Doing them one-by-one as separate small commits straight to `main` —
-  `main` would be broken/inconsistent between steps 2 and 3 in particular
-  (config format changes while half the scripts still expect the old
-  module).
-- Spinning up a full separate fork — unnecessary complexity given you
-  already collaborate directly on this repo; forks make sense when you
-  don't have write access or want to keep experimental work fully
-  separate from someone else's namespace.
-
-**Recommendation:** open a GitHub issue per item above (for visibility —
-your student can see what's coming and comment/object before you touch
-something they depend on), then do the actual work on a long-lived
-feature branch (e.g. `refactor/packaging`) and merge via PR once each
-cohesive chunk (e.g. "#2 + #1 together", since they're tightly coupled)
-is working end-to-end. That way `main` stays usable for your student the
-whole time, but you still get the lightweight issue-tracking/discussion
-trail. Only fall back to a personal fork if your student is running
-experiments off `main` daily and you'd rather not have half-finished
-branches visible in the shared repo at all.
