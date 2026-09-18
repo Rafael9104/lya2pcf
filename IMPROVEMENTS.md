@@ -76,7 +76,8 @@ go — but check before assuming that of anything else.
 otherwise you restructure imports once for packaging and again for config
 loading.
 
-**Done 2026-09-17** on branch `feat/src-layout`. Everything moved into
+**Done 2026-09-17** on branch `feat/src-layout`, PR #15, merged into
+`main` 2026-09-18. Everything moved into
 `src/lya2pcf/`, `import X` became `from . import X` throughout, and
 `pyproject.toml` gives console scripts `lya2pcf-extract[-eboss]`,
 `lya2pcf-correlate[-multi]`, `lya2pcf-distort[-multi]`, `lya2pcf-post`
@@ -384,6 +385,12 @@ and most architecture-level change on this list — do it last, once the
 rest of the codebase is settled, so you're not restructuring packaging
 *and* the process/memory model at the same time.
 
+(This is the same idea the README's old "Things to do" list had as
+"use multiprocessing for shared memory machines to reduce memory
+usage" — folded in here rather than kept as a separate note, since #6
+already covers it in more depth. See #18 for the README's other
+"Things to do" entry, about not requiring mpi4py for a single process.)
+
 ## 7. float32 vs float64: the CUDA kernel won't build on older GPUs
 
 **Discovered 2026-09-10**, while smoke-testing the GPU correlation path
@@ -483,10 +490,18 @@ storage with float64 accumulators for the histogram bins only.
 **The distortion path is deliberately not covered by this setting** —
 see #10, which records why and what it would take.
 
-**Still unverified:** the float64 GPU path cannot be run on this
-workstation at all, so these changes are exercised in float32 only.
-A Pascal-or-newer card needs to confirm float64 still behaves. The
-distortion path is verified as compiling only, never executed here.
+The float64 GPU path could not be run on this workstation at all (Pascal
+or newer only), so these changes were originally exercised in float32
+only, with the distortion path verified as compiling but never executed.
+
+**Resolved 2026-09-18:** Josue confirmed on production Pascal-or-newer
+hardware that both the two-point correlation and the distortion matrix
+run successfully at `gpu_precision: float64`. That was a run-completes
+check, not a numeric comparison against a reference (unlike the float32
+vs CPU comparison already measured above) — worth keeping in mind if a
+result from this path is ever questioned, since "runs" and "produces the
+expected numbers" are still two different claims. See #10 for the
+distortion side of the same confirmation.
 
 **Depends on:** #2 for the config plumbing, otherwise independent.
 
@@ -634,8 +649,13 @@ rather than obvious failures:
 
 Verified by running the distortion end to end at float32 on the GTX 970
 (with `number_of_neighs` and `rmax` reduced to fit 4 GB) — the first
-time that path has run on this machine. float64 remains untested here
+time that path has run on this machine. float64 remained untested here
 for the same compute-capability reason as #7.
+
+**Resolved 2026-09-18**, same as #7: Josue confirmed the distortion
+matrix also runs successfully at `gpu_precision: float64` on production
+Pascal-or-newer hardware. As with the two-point side, this confirms the
+run completes, not that its output has been checked against a reference.
 
 ## 11. Add a rebinning (coadding) procedure to lya2pcf
 
@@ -1020,18 +1040,54 @@ small, independent, low-risk change and could be done first. The full
 since all four drivers currently duplicate the device-assignment logic
 this would replace.
 
+## 18. mpi4py is a hard dependency even for a single process
+
+Moved here from the README's old "Things to do" list ("do not call for
+mpi4py when only used with 1 cpu"). Every driver (`two_point.py`,
+`two_point_multiple_data.py`, `distortion.py`,
+`distortion_multiple_data.py`) unconditionally does `from mpi4py import
+MPI` and builds `MPI.COMM_WORLD`, even for a single local process with
+no `mpirun` in sight — that works fine (`COMM_WORLD` is a valid
+size-1 communicator on its own, confirmed while checking mpi4py's pip
+packaging for the install-instructions rewrite), so this is not a
+correctness bug. It is dependency weight: `mpi4py` needs a real MPI
+implementation resolvable on the machine to import at all (see the
+README's install section, and the `--no-binary mpi4py` note for making
+sure it links the right one), which is a real thing to have installed
+just to run one process on one machine with no MPI job in sight — e.g.
+a laptop with no MPI implementation could not `pip install mpi4py`
+usably even for a `--gpu` single-device run that has nothing to
+coordinate.
+
+**Fix direction:** guard the `mpi4py` import and `COMM_WORLD` setup
+behind an actual multi-process check — e.g. only import it when an MPI
+rank/size environment variable set by the launcher (`OMPI_COMM_WORLD_SIZE`,
+`PMI_SIZE`, etc.) is present, and fall back to a trivial rank-0-of-1
+stand-in object otherwise that the rest of each driver already treats
+`comm/mpi_rank/mpi_size` as (so the drivers themselves would not need to
+branch — only the setup at the top of each would). This is a smaller,
+narrower version of what #15's driver merge would touch anyway, since
+all four drivers duplicate this same setup block.
+
+**Depends on:** nothing structural; independent of #17, though both are
+about the same "how many processes/GPUs" question from different
+angles — #17 is about the count itself being split across two places,
+this is about the cost of requiring MPI at all for the trivial case of
+one process. Natural to land together with #15's driver merge.
+
 ---
 
 ## Suggested order
 
 1. ~~**#5 trailing-slash fix**~~ — **done 2026-09-10**, branch
-   `fix/path-joining`, issue #2, PR #3 (open).
+   `fix/path-joining`, issue #2, PR #3, merged.
 2. ~~**#2 `parameters.yml`**~~ — **done 2026-09-10**, branch
    `feat/parameters-yaml` (stacked on `fix/path-joining`), issue #4,
-   PR not yet opened. Also removed the `max_lenght` self-rewrite.
+   PR #5, merged. Also removed the `max_lenght` self-rewrite.
 3. ~~**#1 `src/lya2pcf/` package layout**~~ — **done 2026-09-17**, branch
-   `feat/src-layout`, issue #14. (**#8** was done ahead of it, so imports
-   were already explicit — one less thing for the move to untangle.)
+   `feat/src-layout`, issue #14, PR #15, merged 2026-09-18. (**#8** was
+   done ahead of it, so imports were already explicit — one less thing
+   for the move to untangle.)
 4. ~~**#3 configurable metadata keys**~~ — **done 2026-09-11**, branch
    `feat/metadata-keys`. `delta_reader_eboss.py` still has its own
    hardcoded names; see #3 for why it was left.

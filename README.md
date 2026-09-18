@@ -89,12 +89,6 @@ If you have several GPU's set `number_of_cuda_devices` equal to the number of de
 in case you need to left free the first cuda devices in your machine.
 
 
-## Things to do
-
-1. To use multiprocessing for the cases of shared memory machines, this will ponentially reduce the memory usage.
-
-3. Do not call for mpi4py when only used with 1 cpu
-
 ## Code Contributors
 
 Josue De Santiago
