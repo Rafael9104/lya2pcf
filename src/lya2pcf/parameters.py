@@ -99,7 +99,9 @@ if gpu_precision not in _gpu_precisions:
 gpu_dtype, gpu_ctype = _gpu_precisions[gpu_precision]
 
 distortion_threads_per_block = tuple(_cfg['distortion_threads_per_block'])
-distortion_threads_per_block_2 = tuple(_cfg['distortion_threads_per_block_2'])
+# "2d_threads_per_block" in the YAML, since that's what it is; renamed
+# here because Python identifiers can't start with a digit.
+threads_per_block_2d = tuple(_cfg['2d_threads_per_block'])
 max_threads = _cfg['max_threads']
 
 number_of_neighs = _cfg['number_of_neighs']

@@ -609,6 +609,20 @@ requires changing the kernel. Still open: `max_threads` is referenced
 by no module at all (confirmed by an AST sweep of every `params.*`
 access) and looks like dead config.
 
+`distortion_threads_per_block_2` was simplified further on
+2026-09-18, in `simplify/2d-threads-per-block`: it only ever configured
+`order_active`, the one kernel in this file that is genuinely
+2D-indexed (confirmed by reading it -- only `.x`/`.y` are read, never
+`.z`), so carrying a trailing `1` in config for a dimension the kernel
+never reads was pure noise. Renamed to `2d_threads_per_block: [32, 32]`
+(a real 2-tuple) in `parameters.yml`; `distortion_procedures_pycuda.py`
+appends the unused `z=1` itself when building the `block=` argument,
+since pycuda's `block=` requires exactly 3 ints regardless (confirmed
+empirically: a 2-tuple raises `ArgumentError`, CUDA block dims are
+always 3D at the driver level). Verified end to end: `order_active`
+launches correctly and `distortion_per_pixel` produces sane, non-zero
+output with the new config.
+
 **c. Possible out-of-bounds GPU writes in
 `distortion_procedures_pycuda.py`.** `init()` sizes `le1`, `le2`,
 `le3`, `le4`, `activeBs`, `activeBs_index` and `size_auxiliars_*` using

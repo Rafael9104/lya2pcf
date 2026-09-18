@@ -88,7 +88,14 @@ gpu_precision: float64
 # The two-point correlation kernel sets its own block size internally
 # (correlation_procedures_pycuda.py), so it is not configurable here.
 distortion_threads_per_block: [8, 32, 4]
-distortion_threads_per_block_2: [32, 32, 1]
+
+# Block size for kernels that only need a two-dimensional launch --
+# currently just order_active in the distortion path, which indexes
+# (histogram bin, neighbour) and never reads a z thread/block index.
+# CUDA block dimensions are always 3D at the driver level (pycuda's
+# block= rejects anything but a 3-tuple), so the code appends the
+# always-1 z dimension itself rather than carrying it here.
+2d_threads_per_block: [32, 32]
 max_threads: 1024
 
 number_of_neighs: 80
