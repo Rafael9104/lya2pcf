@@ -19,9 +19,9 @@ from multiprocessing import Pool
 import fitsio
 import warnings
 
-import cosmology
-from forest_class import quasar
-import parameters as params
+from . import cosmology
+from .forest_class import quasar
+from . import parameters as params
 
 def suggest_name(configured, present):
     """Closest name in the file to the configured one, or None.
@@ -132,89 +132,94 @@ def record_from_deltas(file):
         list_of_forests.append(forest_data)
     return list_of_forests
 
-parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    description='Takes delta files by picca and stores data in data.npy.')
-parser.add_argument('--delta-dir', type=str, required=True,
-    help = 'Path to the delta files.')
-parser.add_argument('--data-dir', type=str, default = params.data_dir,
-    help = 'Directory where the data will be stored.')
-parser.add_argument('--split-number', type=int, default = 1,
-    help = 'Number of files to split the data.')
-parser.add_argument('--statistics', action = 'store_true', required = False,
-    help = 'Write the sizes and neighbors diagnostic files to the data '
-           'directory. Counting neighbours needs a full neighbour search, '
-           'which is a large part of the runtime.')
-args = parser.parse_args()
+def main():
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description='Takes delta files by picca and stores data in data.npy.')
+    parser.add_argument('--delta-dir', type=str, required=True,
+        help = 'Path to the delta files.')
+    parser.add_argument('--data-dir', type=str, default = params.data_dir,
+        help = 'Directory where the data will be stored.')
+    parser.add_argument('--split-number', type=int, default = 1,
+        help = 'Number of files to split the data.')
+    parser.add_argument('--statistics', action = 'store_true', required = False,
+        help = 'Write the sizes and neighbors diagnostic files to the data '
+               'directory. Counting neighbours needs a full neighbour search, '
+               'which is a large part of the runtime.')
+    args = parser.parse_args()
 
-if os.path.exists(args.data_dir):
-    warnings.warn('The output delta directory already exists. This procedure might mix deltas from a different run.')
+    if os.path.exists(args.data_dir):
+        warnings.warn('The output delta directory already exists. This procedure might mix deltas from a different run.')
 
-if not os.path.exists(args.data_dir):
-    os.makedirs(args.data_dir)
+    if not os.path.exists(args.data_dir):
+        os.makedirs(args.data_dir)
 
-data = {}
-directory = glob.glob(args.delta_dir + '/*.fits.gz')
-if len(directory) == 0:
-    print('No delta files in directory ' + args.delta_dir)
+    data = {}
+    directory = glob.glob(args.delta_dir + '/*.fits.gz')
+    if len(directory) == 0:
+        print('No delta files in directory ' + args.delta_dir)
 
-# Check the configured keys against one file before starting the workers, so a
-# mismatch is reported plainly instead of through a RemoteTraceback.
-if directory:
-    with fitsio.FITS(directory[0]) as first_file:
-        check_keys(first_file, directory[0])
+    # Check the configured keys against one file before starting the workers, so a
+    # mismatch is reported plainly instead of through a RemoteTraceback.
+    if directory:
+        with fitsio.FITS(directory[0]) as first_file:
+            check_keys(first_file, directory[0])
 
-pool = Pool()
-data_list = pool.map(record_from_deltas, directory)
-max_lenght = 0
-min_distance = 1e10
-j=0
+    pool = Pool()
+    data_list = pool.map(record_from_deltas, directory)
+    max_lenght = 0
+    min_distance = 1e10
+    j=0
 
-sizes = []
+    sizes = []
 
-for list_of_forests in data_list:
-    for forest_data in list_of_forests:
-        j+=1
-        new_long=len(forest_data.dc)
-        if new_long>max_lenght:
-            max_lenght = new_long
-        if forest_data.dc[0] < min_distance:
-            min_distance = forest_data.dc[0]
-        if forest_data.pix in data.keys():
-            data[forest_data.pix].append(forest_data)
-        else:
-            data[forest_data.pix] = [forest_data]
-        sizes.append(new_long)
-del data_list
+    for list_of_forests in data_list:
+        for forest_data in list_of_forests:
+            j+=1
+            new_long=len(forest_data.dc)
+            if new_long>max_lenght:
+                max_lenght = new_long
+            if forest_data.dc[0] < min_distance:
+                min_distance = forest_data.dc[0]
+            if forest_data.pix in data.keys():
+                data[forest_data.pix].append(forest_data)
+            else:
+                data[forest_data.pix] = [forest_data]
+            sizes.append(new_long)
+    del data_list
 
-angmax = 2*np.arcsin(0.5*params.rtmax/min_distance)
-print('Minimum comoving distance to a forest (Mpc/h):',min_distance)
-print('Maximum angle between pairs of skewers that are used (rad):', angmax)
+    angmax = 2*np.arcsin(0.5*params.rtmax/min_distance)
+    print('Minimum comoving distance to a forest (Mpc/h):',min_distance)
+    print('Maximum angle between pairs of skewers that are used (rad):', angmax)
 
-list_of_pixels = list(data.keys())
-list_of_pixels.sort()
+    list_of_pixels = list(data.keys())
+    list_of_pixels.sort()
 
 
-# The neighbour search is only needed for these diagnostics: the correlation
-# and distortion both call forest.neighborhood() and recompute from scratch.
-# It is a large part of the runtime, so it is off unless asked for.
-if args.statistics:
-    neighbors = []
-    for pix in list_of_pixels:
-        for forest in data[pix]:
-            forest_angmax = 2*np.arcsin(0.5*params.rtmax/forest.dc[0])
-            neigh_names, _ = forest.neighborhood_names(data, forest_angmax)
-            neighbors.append(len(neigh_names))
-    np.savetxt(os.path.join(args.data_dir, "sizes"), sizes)
-    np.savetxt(os.path.join(args.data_dir, "neighbors"), neighbors)
+    # The neighbour search is only needed for these diagnostics: the correlation
+    # and distortion both call forest.neighborhood() and recompute from scratch.
+    # It is a large part of the runtime, so it is off unless asked for.
+    if args.statistics:
+        neighbors = []
+        for pix in list_of_pixels:
+            for forest in data[pix]:
+                forest_angmax = 2*np.arcsin(0.5*params.rtmax/forest.dc[0])
+                neigh_names, _ = forest.neighborhood_names(data, forest_angmax)
+                neighbors.append(len(neigh_names))
+        np.savetxt(os.path.join(args.data_dir, "sizes"), sizes)
+        np.savetxt(os.path.join(args.data_dir, "neighbors"), neighbors)
 
-pixels_partial = np.array_split(list_of_pixels, args.split_number)
-i=1
-for subset in pixels_partial:
-    subdata = {x: data[x] for x in subset}
-    np.save(os.path.join(args.data_dir, 'data' + str(i)), subdata)
-    i+=1
-    for pixel in subset:
-        data.pop(pixel)
+    pixels_partial = np.array_split(list_of_pixels, args.split_number)
+    i=1
+    for subset in pixels_partial:
+        subdata = {x: data[x] for x in subset}
+        np.save(os.path.join(args.data_dir, 'data' + str(i)), subdata)
+        i+=1
+        for pixel in subset:
+            data.pop(pixel)
 
-print("The largest forest has ", max_lenght, " data points.")
-print("The number of forests is:", j)
+    print("The largest forest has ", max_lenght, " data points.")
+    print("The number of forests is:", j)
+
+
+if __name__ == '__main__':
+    main()

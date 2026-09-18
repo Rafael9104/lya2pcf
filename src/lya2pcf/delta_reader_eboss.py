@@ -18,9 +18,9 @@ from multiprocessing import Pool
 import fitsio
 import warnings
 
-import cosmology
-from forest_class import quasar
-import parameters as params
+from . import cosmology
+from .forest_class import quasar
+from . import parameters as params
 
 def record_from_deltas(file):
     """ Extracts all forests data from a single delta file to a list
@@ -55,31 +55,36 @@ def record_from_deltas(file):
         list_of_forests.append(forest_data)
     return list_of_forests
 
-parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    description='Takes delta files by picca and stores data in data.npy.')
-parser.add_argument('--delta-dir', type=str, required=True,
-    help = 'Path to the delta files.')
-parser.add_argument('--data-dir', type=str, default = params.data_dir,
-    help = 'Directory where the data will be stored.')
-args = parser.parse_args()
+def main():
+    parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+        description='Takes delta files by picca and stores data in data.npy.')
+    parser.add_argument('--delta-dir', type=str, required=True,
+        help = 'Path to the delta files.')
+    parser.add_argument('--data-dir', type=str, default = params.data_dir,
+        help = 'Directory where the data will be stored.')
+    args = parser.parse_args()
 
-if os.path.exists(args.data_dir):
-    warnings.warn('The output delta directory already exists. This procedure might mix deltas from a different run.')
+    if os.path.exists(args.data_dir):
+        warnings.warn('The output delta directory already exists. This procedure might mix deltas from a different run.')
 
-if not os.path.exists(args.data_dir):
-    os.makedirs(args.data_dir)
+    if not os.path.exists(args.data_dir):
+        os.makedirs(args.data_dir)
 
-data = {}
-directory = glob.glob(args.delta_dir + '/*.fits.gz')
-if len(directory) == 0:
-    print('No delta files in directory ' + args.delta_dir)
+    data = {}
+    directory = glob.glob(args.delta_dir + '/*.fits.gz')
+    if len(directory) == 0:
+        print('No delta files in directory ' + args.delta_dir)
 
-pool = Pool()
-data_list = pool.map(record_from_deltas, directory)
-for list_of_forests in data_list:
-    for forest_data in list_of_forests:
-        if forest_data.pix in data.keys():
-            data[forest_data.pix].append(forest_data)
-        else:
-            data[forest_data.pix] = [forest_data]
-np.save(os.path.join(args.data_dir, 'data1'), data)
+    pool = Pool()
+    data_list = pool.map(record_from_deltas, directory)
+    for list_of_forests in data_list:
+        for forest_data in list_of_forests:
+            if forest_data.pix in data.keys():
+                data[forest_data.pix].append(forest_data)
+            else:
+                data[forest_data.pix] = [forest_data]
+    np.save(os.path.join(args.data_dir, 'data1'), data)
+
+
+if __name__ == '__main__':
+    main()

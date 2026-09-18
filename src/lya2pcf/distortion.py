@@ -9,12 +9,13 @@ import time
 from mpi4py import MPI
 
 import numpy as np
-import parameters as params
-from forest_class import quasar
-import distortion_procedures_pycuda as distortion
+
+from . import parameters as params
+from .forest_class import quasar
+from . import distortion_procedures_pycuda as distortion
 
 
-if __name__ == '__main__':
+def main():
 
     comm = MPI.COMM_WORLD
     mpi_rank = comm.Get_rank()
@@ -124,3 +125,7 @@ if __name__ == '__main__':
 
     if mpi_rank == 0:
             np.save(os.path.join(params.corr_dir, 'distortion'), distortion_total/weight_total[:, None])
+
+
+if __name__ == '__main__':
+    main()

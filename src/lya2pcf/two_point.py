@@ -8,13 +8,13 @@ import os
 import time
 
 import numpy as np
-import parameters as params
-from forest_class import quasar
-
 from mpi4py import MPI
 
+from . import parameters as params
+from .forest_class import quasar
 
-if __name__ == '__main__':
+
+def main():
 
     comm = MPI.COMM_WORLD
     mpi_rank = comm.Get_rank()
@@ -105,9 +105,9 @@ if __name__ == '__main__':
 
     # Moving data dict to the correlation_procedures module
     if args.cpu:
-        import correlation_procedures_cpu as correlations
+        from . import correlation_procedures_cpu as correlations
     else:
-        import correlation_procedures_pycuda as correlations
+        from . import correlation_procedures_pycuda as correlations
     correlations.init(data, log_file, shape_hist, angmax)
 
     num_pixels_partial = len(pixels_partial)
@@ -141,3 +141,7 @@ if __name__ == '__main__':
             break
 
     print('Finished correlation computation.')
+
+
+if __name__ == '__main__':
+    main()

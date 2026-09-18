@@ -1,18 +1,16 @@
 import numpy as np
 import random
 import time
-import parameters as params
-import gpu_support
 
 import pycuda.driver as cuda
 import pycuda.autoinit
 import pycuda.gpuarray as gpuarray
-from pycuda.compiler import SourceModule
+
+from . import parameters as params
+from . import gpu_support
 
 random.seed(1)
-gpu_support.check_precision_supported()
-with open('cuda_kernels.cpp') as f:
-  mod = SourceModule(f.read(), options=['-DMYFLOAT=' + params.gpu_ctype])
+mod = gpu_support.compile_kernels()
 precompute_distances = mod.get_function("precompute_distances")
 compute_etas = mod.get_function("compute_etas")
 compute_d = mod.get_function("compute_d")

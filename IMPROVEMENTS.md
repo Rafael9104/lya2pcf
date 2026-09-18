@@ -76,6 +76,94 @@ go — but check before assuming that of anything else.
 otherwise you restructure imports once for packaging and again for config
 loading.
 
+**Done 2026-09-17** on branch `feat/src-layout`. Everything moved into
+`src/lya2pcf/`, `import X` became `from . import X` throughout, and
+`pyproject.toml` gives console scripts `lya2pcf-extract[-eboss]`,
+`lya2pcf-correlate[-multi]`, `lya2pcf-distort[-multi]`, `lya2pcf-post`
+(the "several entry points" option, since the drivers are still
+separate — see #15). `2pla.py` / `2pla_multiple_data.py` are renamed to
+`two_point.py` / `two_point_multiple_data.py`, since `2pla` cannot be a
+Python module name (`import 2pla` is a syntax error) and so cannot back
+a `module:function` entry point. `process_all.sh` and the README now use
+the installed commands; the analysis notebook's import cell points at
+`lya2pcf.parameters` / `lya2pcf.plot_auxiliars` instead of the flat
+modules.
+
+`delta_reader.py` and `delta_reader_eboss.py` ran their argparse/extraction
+logic at module import time, which an installed entry point cannot call —
+wrapped in `main()`, same for the `if __name__ == '__main__':` bodies of
+the other drivers. `record_from_deltas` stays a top-level function (needed
+as-is for `multiprocessing.Pool.map` to pickle it by qualified name).
+
+**The library API from the "design it as a library" section above is
+done, except the part deferred to #4.** `correlation_procedures_pycuda.py`
+now has a standalone `upload_forests(data, pixel_list) -> ForestBuffers`
+(a dataclass of the device pointers and `max_lenght`), with `init()`
+calling it and unpacking the result into its existing globals so
+`two_point_per_pixel` is untouched. `gpu_support.compile_kernels(path)`
+wraps the `SourceModule` + `-DMYFLOAT` step, defaulting `path` to the
+package's own `cuda_kernels.cpp` via `importlib.resources`; both
+`correlation_procedures_pycuda.py` and `distortion_procedures_pycuda.py`
+now call it instead of each separately opening the file and calling
+`check_precision_supported()`. `distortion_procedures_pycuda.init()` was
+deliberately *not* split into an `upload_forests`-style function: its
+buffers (`etas12/21/...`, `x12/y12/z12/r12`) are distortion-specific, not
+the generic per-forest upload a different correlation would reuse.
+`quasar`, `cosmology` and `parameters` (the config loader) are exposed at
+`lya2pcf.__init__`, deliberately excluding `gpu_support` and the two
+`*_pycuda` modules — they import `pycuda` at module level, so re-exporting
+them from `__init__.py` would make `import lya2pcf` fail on CPU-only
+nodes; a caller that needs them imports the submodule directly, same as
+today's scripts already do conditionally on `--cpu`/`--gpu`. Delta
+extraction returning a `data` dict in memory is explicitly left for #4;
+`delta_reader.py` still only writes `data*.npy`.
+
+The dead three-point hooks noted above (`numpix_mu`, `numpix_theta`,
+`numpix_d`, `precompute_distance_and_angles`) were moved as-is, not
+removed — this PR is the file move, not a cleanup pass.
+
+**Breaking change for existing `data*.npy` files.** These pickle `quasar`
+objects tagged with whatever module path `forest_class` had at extraction
+time. A file written before this move references the flat `forest_class`
+module, which no longer exists as a top-level import. Old files still load
+because `forest_class.py` now does
+`sys.modules.setdefault('forest_class', sys.modules[__name__])` on import
+— pickle resolves a module name against `sys.modules` before touching
+`sys.path`, and every driver already imports `forest_class` before calling
+`np.load(..., allow_pickle=True)` (this is, in fact, why `two_point.py`
+imports `quasar` without otherwise using it — the existing code already
+relied on this same trick for a different reason). **Verified**: loaded
+the pre-existing `deltas_lya2pcf/data1.npy` (committed before this move)
+successfully after the change; `forest.__class__.__module__` correctly
+came back as `lya2pcf.forest_class`. New extractions naturally pickle
+under the new path and need no shim.
+
+**Verified against the real DR1 set** (same 4 files as #15, `deltas_dr1/`,
+`gpu_precision: float32`, GTX 970): extraction reproduces the exact
+figures already on record (1446 forests, longest 967) unchanged.
+Comparing the packaged GPU correlation (`lya2pcf-correlate --gpu`) against
+the pre-move code (`git worktree` of the previous commit, same input,
+same config) over all 16 pixels: total `w_hist` differs by `2.8e-8`
+relative, and the largest single-bin difference is consistent with the
+float32 `atomicAdd` reordering non-determinism already measured in #7 (not
+a regression from the refactor — GPU sums were never expected to be
+bit-identical between runs). Also compiled and ran the distortion kernels
+(`distortion_procedures_pycuda`) through the new shared `compile_kernels()`
+path with no errors.
+
+**Not verified:** the CPU correlation path (`correlation_procedures_cpu.py`,
+only import statements changed) was still running a same-input comparison
+against the pre-move code when this was written — numba + the O(forests²)
+pair search make the 16-pixel DR1 set slow enough that the run did not
+finish in this session; the only change to that file is import syntax
+(`import parameters as params` → `from . import parameters as params`),
+so this is expected to be a formality, but state it as unchecked rather
+than assumed. `two_point_multiple_data.py`, `distortion.py`,
+`distortion_multiple_data.py`, `delta_reader_eboss.py` and `post_processing.py`
+were checked by reading the diff (import-only changes plus the `main()`
+wrap) but not executed end-to-end here — none of them changed logic, all
+of them changed only imports and the top-level-code-to-function wrapping.
+
 ## 2. `parameters.py` → `parameters.yml`
 
 Replace the star-import global-constants module with a YAML config file
@@ -800,9 +888,9 @@ case of one file with an empty buffer.
 2. ~~**#2 `parameters.yml`**~~ — **done 2026-09-10**, branch
    `feat/parameters-yaml` (stacked on `fix/path-joining`), issue #4,
    PR not yet opened. Also removed the `max_lenght` self-rewrite.
-3. **#1 `src/lya2pcf/` package layout** — do right after #2 so you're not
-   restructuring imports twice. (**#8** was done ahead of it, so imports
-   are already explicit — one less thing for the move to untangle.)
+3. ~~**#1 `src/lya2pcf/` package layout**~~ — **done 2026-09-17**, branch
+   `feat/src-layout`, issue #14. (**#8** was done ahead of it, so imports
+   were already explicit — one less thing for the move to untangle.)
 4. ~~**#3 configurable metadata keys**~~ — **done 2026-09-11**, branch
    `feat/metadata-keys`. `delta_reader_eboss.py` still has its own
    hardcoded names; see #3 for why it was left.
