@@ -199,6 +199,23 @@ makes per-run configs easy to version and diff.
 **Depends on:** do before item 1's import restructuring settles, since
 every file currently does `from parameters import *`.
 
+**Done 2026-09-10** on branch `feat/parameters-yaml`, issue #4, PR #5,
+merged. `parameters.yml` plus `parameters.py` as the loader, read once
+at import time, with every derived value (`numpix_rp`, `OmDE`, `d_H0`,
+`gammaovertwo`, `la`, `chiquito`, and later `gpu_dtype`/`gpu_ctype` from
+#7) computed from the raw YAML values rather than stored twice.
+`delta_reader.py`'s `max_lenght` self-rewrite via `fileinput` is gone
+entirely — `max_lenght` isn't in the config at all any more, computed
+fresh from whichever data is actually loaded (see #1's `upload_forests`
+and `distortion_procedures_pycuda.init()`), which is what #12 leans on.
+
+One deviation from the plan as originally written: instead of a
+`lya2pcf.config.load(path)` function returning a dataclass/
+`SimpleNamespace`, `parameters.py` itself *is* the loaded config,
+accessed as `params.X` after `import parameters as params` (later
+`from . import parameters as params` once #8 and #1 landed) — simpler,
+and it's what #1's packaging move built on rather than reopening.
+
 ## 3. Generalize hardcoded metadata/column keys (blinding-safe extraction)
 
 `delta_key = "DELTA"` in parameters is already configurable, but it's read
@@ -339,6 +356,13 @@ output location or worse, files mixed into the wrong directory.
 **Depends on:** nothing; cheapest, most isolated fix on this list. Good
 first PR to build confidence in the new structure, or fine to do
 standalone today regardless of the rest.
+
+**Done 2026-09-10** on branch `fix/path-joining`, issue #2, PR #3,
+merged. Every `data_dir + ...` / `corr_dir + ...` concatenation site
+replaced with `os.path.join(params.data_dir, ...)` /
+`os.path.join(params.corr_dir, ...)`. Reconfirmed with a grep across
+`src/lya2pcf/` after #1's move: no `data_dir +`/`corr_dir +`
+concatenation remains anywhere.
 
 ## 6. Single host-memory copy shared across multiple GPUs (one node)
 
@@ -541,11 +565,12 @@ Three things it flushed out, recorded as #9 below.
 
 ## 9. Things the star-import removal exposed
 
-Found 2026-09-10 while doing #8. None are fixed — recording so they
-aren't lost.
+Found 2026-09-10 while doing #8, recorded here so they weren't lost.
+Status per sub-item: (a) done, (b) resolved with a residual noted below,
+(c) promoted to its own item, #16.
 
-**a. `delta_reader.py` had an undefined name** (fixed as part of #8,
-it was a one-word change): the "no delta files found" branch printed
+**a. `delta_reader.py` had an undefined name — done**, fixed as part of
+#8, it was a one-word change: the "no delta files found" branch printed
 `delta_dir`, which never existed in any namespace — it would have
 raised `NameError` instead of the intended error message. Never caught
 because `import *` makes static checking impossible; `pyflakes` found
@@ -585,6 +610,10 @@ neighbours, which may well be reachable on dense fields or at large
 sizing the arrays from the actual maximum (the same argument as
 `max_lenght` in #2). Before the rename both were spelled
 `number_of_neighs`, which is presumably how it went unnoticed.
+
+**Promoted to its own item — see #16**, which covers deriving
+`number_of_neighs` from the data instead of configuring it (the actual
+fix), rather than just detecting the overrun after the fact.
 
 ## 10. Distortion matrix precision is not configurable (and is memory-bound)
 
@@ -700,28 +729,32 @@ outside their allocations. On a GPU that does not reliably fault — it
 silently corrupts whatever is adjacent, so the run completes and
 produces wrong numbers.
 
-This got much less likely now that `max_lenght` is derived from the
-loaded data rather than carried in a config file (#2), but "less
-likely" is not "detected", and #9c is still live and unfixed.
+**Partially addressed by #2.** The `max_lenght` half of this is no
+longer really live: both `correlation_procedures_pycuda.upload_forests`
+and `distortion_procedures_pycuda.init()` compute `max_lenght` from
+whichever data they are about to pack, in the same function that then
+sizes the buffers from it — so the buffers and the data are sized from
+one measurement by construction, not merely "less likely" to disagree.
+No host-side assertion is needed for that half; there is no longer a
+separate `max_lenght` value that could drift from the data.
 
-**What would help, cheapest first:**
+The `number_of_neighs` half is unaddressed and is where the remaining
+work is — **see #16**, which covers deriving it from the data the same
+way `max_lenght` already is (rather than adding an assertion around a
+config guess that shouldn't exist).
 
-- Assert on the host before launching: the largest forest in `data`
-  must not exceed the `max_lenght` the buffers were built with, and the
-  retained neighbour count must not exceed `number_of_neighs`. This
-  catches both known cases for the price of a couple of comparisons per
-  pixel, and can raise a message naming the offending forest.
+**What would still help, independent of #16, cheapest first:**
+
 - Bounds-check inside the kernels behind a debug flag, with a
   `printf` naming the index and the limit. Too costly for the inner
   loop in production, but a build-time switch makes it usable when
   something looks wrong.
-- Longer term, run the test suite under `compute-sanitizer`
-  (`cuda-memcheck`'s successor), which reports out-of-bounds device
-  writes directly and would have caught #9c without anyone suspecting
-  it.
+- Run the test suite under `compute-sanitizer` (`cuda-memcheck`'s
+  successor), which reports out-of-bounds device writes directly and
+  would have caught #9c without anyone suspecting it.
 
-**Depends on:** nothing; the host-side assertions are small and worth
-doing alongside a fix for #9c.
+**Depends on:** nothing for the two bullets above; the `number_of_neighs`
+piece depends on #16.
 
 ## 13. Forests are padded to max_lenght, wasting a large share of GPU memory
 
@@ -1103,34 +1136,3 @@ one process. Natural to land together with #15's driver merge.
    lifetime/cleanup, race conditions between ranks). Do it last, on a
    stable base, and test carefully on a real multi-GPU node before
    trusting results from it.
-
-## Workflow: fork vs. issues on your student's repo
-
-You already push directly to `main` on `Rafael9104/lya2pcf` (recent
-commits like `9040e4b`, `0ce8057` are yours, no fork in between) — so this
-isn't really a "contributing to someone else's project" situation, you
-have write access already.
-
-Given that, and that several of these changes are large and *interdependent*
-(the YAML config change alone touches every file that does
-`from parameters import *`), I'd avoid two extremes:
-
-- Doing them one-by-one as separate small commits straight to `main` —
-  `main` would be broken/inconsistent between steps 2 and 3 in particular
-  (config format changes while half the scripts still expect the old
-  module).
-- Spinning up a full separate fork — unnecessary complexity given you
-  already collaborate directly on this repo; forks make sense when you
-  don't have write access or want to keep experimental work fully
-  separate from someone else's namespace.
-
-**Recommendation:** open a GitHub issue per item above (for visibility —
-your student can see what's coming and comment/object before you touch
-something they depend on), then do the actual work on a long-lived
-feature branch (e.g. `refactor/packaging`) and merge via PR once each
-cohesive chunk (e.g. "#2 + #1 together", since they're tightly coupled)
-is working end-to-end. That way `main` stays usable for your student the
-whole time, but you still get the lightweight issue-tracking/discussion
-trail. Only fall back to a personal fork if your student is running
-experiments off `main` daily and you'd rather not have half-finished
-branches visible in the shared repo at all.
