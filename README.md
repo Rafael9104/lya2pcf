@@ -61,19 +61,15 @@ environment variable to point somewhere else.) Then execute:
 $ mpirun -np NUMBER_OF_CORES lya2pcf-correlate (--cpu | --gpu)
 ```
 In the case that you are using a GPU, you need specify the number NUMBER_OF_CORES equal to the number of GPUs available.
-If you are using more than one `data#.npy` file where you stored the deltas, you need to compute the correlation with the following command instead:
-```
-$ mpirun -np NUMBER_OF_CORES lya2pcf-correlate-multi (--cpu | --gpu)
-```
+This works the same way whether the extraction wrote one `data#.npy` file or many (`--split-number`): pixels are always
+split evenly across the MPI ranks, and each rank loads only the files its own pixels -- plus a buffer of neighbouring
+pixels from other files, so no pair is missed at a file boundary -- actually need.
+
 To compute the distortion matrix you need to run
 ```
 $ mpirun -np NUMBER_OF_CORES lya2pcf-distort
 ```
-it will produce the file `distortion.npy` in the directory `corr_dir`. The distortion matrix is GPU-only by design; there is no CPU path. In the case that you are using more than one `data#.npy` file where you stored the deltas, you need to compute the distortion with the following command instead:
-
-```
-$ mpirun -np NUMBER_OF_CORES lya2pcf-distort-multi
-```
+it will produce the file `distortion.npy` in the directory `corr_dir`. The distortion matrix is GPU-only by design; there is no CPU path.
 
 Now that the hardest part has finished, you just need to compute the correlation function and its error with
 ```

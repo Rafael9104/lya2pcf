@@ -77,13 +77,22 @@ def main():
 
     pool = Pool()
     data_list = pool.map(record_from_deltas, directory)
+    min_distance = 1e10
     for list_of_forests in data_list:
         for forest_data in list_of_forests:
+            if forest_data.dc[0] < min_distance:
+                min_distance = forest_data.dc[0]
             if forest_data.pix in data.keys():
                 data[forest_data.pix].append(forest_data)
             else:
                 data[forest_data.pix] = [forest_data]
     np.save(os.path.join(args.data_dir, 'data1'), data)
+
+    # See delta_reader.py's data_index.npy for what this is for -- the
+    # multi-file drivers need it even for a single-file extraction like
+    # this one, so they don't need a separate code path for that case.
+    np.save(os.path.join(args.data_dir, 'data_index'),
+            {'pixel_file': {int(p): 1 for p in data}, 'min_distance': min_distance})
 
 
 if __name__ == '__main__':

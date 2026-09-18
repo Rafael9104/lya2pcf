@@ -15,8 +15,6 @@ Every other item on this list is done. Remaining:
   GPU memory
 - **#14** — `np.save` of the forest objects is slow and spikes RAM at
   scale (partially addressed — see the item for what's left)
-- **#15** — Merge the `*_multiple_data` drivers, and add a buffer zone
-  so no pair is missed
 - **#16** — `number_of_neighs` should be derived from the data, not a
   config guess ([open issue #1](https://github.com/Rafael9104/lya2pcf/issues/1))
 - **#17** — Multi-GPU runs split "how many GPUs" across two unrelated
@@ -888,13 +886,149 @@ recover that too.
    the working directory. On the DR1 set extraction went from 2.44 s to
    1.94 s (~20%) with files 6% smaller; the saving is larger on denser
    data, where neighbour counts per forest are higher.
-4. `--split-number` already exists and lowers the peak per save, at the
-   cost of more files.
+4. `--split-number` already exists and lowers the peak *per `np.save`
+   call*, at the cost of more files -- but **not** the peak for
+   extraction as a whole. Checked while working on #15 (2026-09-18):
+   `pool.map(record_from_deltas, directory)` is synchronous, so it
+   doesn't return until every worker's forests are collected into one
+   list in the main process -- at that point the whole dataset is
+   resident in memory no matter what `--split-number` is; splitting
+   only controls what happens afterwards, as `data` gets chopped up and
+   saved/popped piece by piece. A real memory measurement on the DR1 set
+   (`/usr/bin/time -v`, `--split-number 1` vs `4`) showed only an 11%
+   difference in peak RSS (350.7 MB vs 311.7 MB) -- consistent with this,
+   though the set is too small (~50 MB) to be a scale-representative
+   test on its own; the code-flow argument above doesn't depend on scale
+   to hold, `Pool.map()`'s semantics are what they are regardless of
+   dataset size.
 
 **Depends on:** (1) and (2) are #4 and #13, and are where the real
 15-minute saving is. (3) is done and helps, but does not change the
 fundamental problem: as long as the file holds pickled Python objects,
 saving is slow and memory-hungry.
+
+**(4), the actual fix, done 2026-09-18** on branch
+`refactor/pixel-buffer-zones` (same branch as #15, since it grew out of
+reviewing that work): `delta_reader.py` now extracts in two passes
+instead of one `pool.map` over everything.
+
+- **Pass 1**, `record_pixel_only`: reads only each file's RA/DEC (no
+  delta/weight/lambda arrays, no `quasar` objects) to learn which output
+  pixels it contributes to and how many forests each gets. Every file is
+  therefore opened and decompressed *twice* -- once here, once again in
+  pass 2 -- which is **not as cheap as it sounds**, corrected after
+  Josue asked directly: measured metadata-only vs. a full read on the
+  same real file and got 0.042s vs. 0.046s -- almost identical. `fitsio`
+  pays nearly the same cost to open and decompress a `.fits.gz` file
+  regardless of how many columns you read from it; the expensive part is
+  the gzip decompression on open, not the volume subsequently read.
+  Checked the FITS headers too, in case a coarser pixel/region keyword
+  could avoid touching per-forest RA/DEC at all -- none present. So the
+  doubled I/O is real and unavoidable with `fitsio` used this way, not
+  negligible the way "reads only RA/DEC" implies on its own. What kept
+  the measured *total* wall-clock overhead modest (~15-20%, see the
+  timing note below) despite this is that per-file decompression is
+  small next to the *other* cost pass 1 skips -- the per-forest Python
+  work in pass 2 (cosmology interpolation, building `quasar` objects) --
+  not that pass 1 itself is cheap. Whether that ratio holds at the real
+  ~40 GB scale is a reasonable extrapolation (both terms scale with file
+  size) rather than something measured here. **One input file does not
+  necessarily map to one output pixel** -- checked on real data before
+  assuming otherwise: one DR1 file spans 4 distinct pixels at the
+  default `nside=32`. Also checked whether a pixel could be split across
+  *different* input files (it would break the one-pixel-one-file
+  invariant `data_index.npy`/`pixel_partition.py` depend on) -- not
+  observed on the real DR1 set (every pixel came from exactly one file,
+  consistent with DESI's file-level pixelization being coarser than this
+  `nside`), but the design does not actually depend on that holding:
+  the census is a true many-to-many map, built the same way regardless.
+- **The first version of this split the pixel list into contiguous
+  sorted ranges** (`np.array_split`, matching item #15's own chunking),
+  which meant a file whose pixels landed on both sides of a range
+  boundary got re-extracted once per chunk it fed. Measured, not
+  assumed: 3 timed trials each at `--split-number` 1/4/16 on the real
+  DR1 set showed old (single-pass) code flat at ~2.1s regardless of
+  split-number, but this first version growing with it -- 2.2s / 2.6s
+  (+24%) / 4.3s (+~100%) -- from redundant I/O scaling with how often a
+  chunk boundary happened to cut through a file. Reported to Josue, who
+  judged that not worth the memory fix and asked for the alternative
+  this item originally dismissed.
+- **Replaced with `group_files_by_shared_pixels`**: unions files
+  transitively whenever they share a pixel (so a chunk boundary can
+  never cut through a file), then greedily packs the resulting groups
+  into `--split-number` chunks, largest (by forest count) first into
+  whichever chunk is currently smallest. Every file is read exactly
+  once, by construction, at any `--split-number` -- re-verified on the
+  real DR1 set with the same 3-trial timings: now flat at ~2.0-2.4s
+  regardless of split-number (1, 4, 16), matching the old code's
+  flatness rather than its scaling growth; the remaining ~15-20% above
+  the old code's ~2.1s is the one-time census pass itself, not a
+  growing cost. **Trade-off knowingly accepted**: chunks are no longer
+  contiguous pixel-ID ranges, so the property #15 already flagged as
+  unreliable for buffer locality (RING ordering) is now not even
+  attempted -- traded away on purpose for zero redundant I/O, not lost
+  by accident.
+- **Pass 2** extracts and saves one output chunk at a time: only the
+  files that chunk actually needs are read, only that chunk's forests
+  are ever resident, and `data*.npy` is written and freed
+  (`del subdata`) before the next chunk starts. This is genuinely
+  sequential -- chunk 2 cannot start until chunk 1 is on disk and gone.
+- **`--statistics`'s neighbour count needed the same buffer-zone
+  treatment `two_point.py`/`distortion.py` got in #15**, for the same
+  reason: computed one chunk at a time now (to stay out of the
+  "everything in memory" business this item is about), a forest's
+  `neighborhood()` call would otherwise only see its own chunk, which is
+  exactly the missing-neighbour bug #15 fixed for the correlation
+  drivers, reintroduced here for the diagnostic pass. Fixed the same
+  way, reusing `pixel_partition.find_buffer_pixels`/`load_rank_data`
+  directly rather than a second implementation.
+
+**Verified against the real DR1 set**, in two stages matching the two
+versions above:
+
+- The first (sorted-pixel-range) version was checked against a `git
+  worktree` of the pre-change commit, same data, `--split-number 4`
+  both ways: `data_index.npy` byte-identical, every output file's
+  pixels/forest-counts/forest-identities identical.
+- The `group_files_by_shared_pixels` replacement necessarily produces a
+  *different* `pixel_file` mapping (chunks follow file connectivity now,
+  not sorted pixel ranges), so a byte-identical comparison against the
+  old code no longer applies. Verified instead against a `--split-number
+  1` extraction of the same data as ground truth: reconstructed the full
+  dataset from whichever chunk each pixel actually landed in and
+  compared every pixel's forest set (by `forest.name`) to the ground
+  truth -- exact match, and confirmed each of the DR1 set's 4 chunks
+  ended up holding exactly one input file's worth of pixels (the
+  degenerate, zero-sharing case already established under #15).
+- Re-ran #15's own per-forest neighbour-set verification (see #15)
+  against this version's output too: still an exact match against the
+  1-file ground truth, 320,330 pair-links, 0 missing, 0 spurious --
+  confirms neither extraction change disturbed what #15 already fixed.
+- `--statistics`'s new buffer-aware neighbour count: `sum(neighbors) =
+  309425` on the real DR1 set -- an exact match to the figure already on
+  record above ("1446 forests carrying 309,425 neighbour entries"),
+  confirming the chunk-by-chunk buffered computation reproduces the old
+  whole-dataset computation exactly, not just approximately.
+- **Not demonstrated empirically:** the actual memory saving. The DR1
+  test set (~50 MB of delta files) is dominated by Python/numpy/fitsio
+  import overhead (~300 MB) either way -- measured peak RSS was, if
+  anything, marginally *higher* for the new code on this tiny set
+  (315.0 MB vs 311.7 MB old), which is expected noise at a scale far
+  below where the fix matters, not a regression. The claim that peak
+  memory is now bounded by one chunk's data rather than the whole
+  dataset rests on reading `pool.map`/`del` semantics (deterministic
+  language behaviour, not scale-dependent), the same way the original
+  problem was found -- not on a large-scale measurement, which nothing
+  available here could produce.
+- **The census pass itself was checked directly**, since "does pass 1
+  load much into memory" is a fair question on its own: ran
+  `record_pixel_only` via `pool.map` in isolation and compared its peak
+  RSS (229 MB) against the full extraction's (350.7 MB) on the same DR1
+  set. The ~121 MB difference is attributable to pass 2's actual forest
+  data (flux/weight arrays, `quasar` objects), which pass 1 never
+  touches -- it returns only `(unique_pix, counts)` per file, so its own
+  footprint scales with the number of distinct pixels in the dataset,
+  not with forest count or delta-array size.
 
 ## 15. Merge the `*_multiple_data` drivers, and add a buffer zone so no pair is missed
 
@@ -987,6 +1121,102 @@ Two details for whoever implements it:
 takes a list of files and a buffer policy replaces all four scripts, and
 the `2pla.py` "everything in one file" case becomes just the special
 case of one file with an empty buffer.
+
+**Done 2026-09-18** on branch `refactor/pixel-buffer-zones` (issue #20,
+PR #21). `two_point_multiple_data.py` and `distortion_multiple_data.py`
+are deleted; `two_point.py` and `distortion.py` now handle one file or
+many identically. The "single-file" case really is just the general
+case with an empty buffer, as predicted -- no special-casing needed
+anywhere in the drivers.
+
+One deviation from the plan above: the buffer is built from **pixel**
+centers via `query_disc`, not by recomputing each forest's own
+`neigh_pixels` as the "`delta_reader.py` used to store `neigh_pixels`
+per forest..." note suggested. Coarser (one `query_disc` call per owned
+pixel rather than per forest) and cheaper, and still exact given the
+`max_pixrad` margin described below -- a forest-level recomputation
+would only buy tighter buffers, not correctness, so wasn't worth the
+extra cost here.
+
+**How work is split, settled as: pixels across ranks, files loaded
+per-rank on demand.** Considered splitting files across ranks instead
+(closer to what `*_multiple_data.py` already did) — rejected because it
+leaves ranks idle whenever there are fewer files than ranks, including
+the single-file case, which is common (small test runs, `--split-number`
+left at its default of 1). Pixels split evenly across every rank
+(`np.array_split` on the sorted global pixel list, same convention
+`delta_reader.py` already uses to build files) works for any files/ranks
+ratio, including more ranks than files; each rank then loads only
+the `data*.npy` files its own pixels and their buffer actually touch,
+not the whole dataset. New shared module `pixel_partition.py` holds
+this (`assign_pixels`, `find_buffer_pixels`, `load_rank_data`), used by
+both drivers.
+
+**The buffer**, per pixel, is `query_disc` centered on that pixel with
+radius `angmax + healpy.max_pixrad(nside)` — the margin matters:
+`query_disc` is evaluated from the pixel's *center*, but a forest can
+sit anywhere within it, so the search has to reach `max_pixrad` further
+than `angmax` alone to guarantee no real neighbour outside the pixel is
+missed. `max_pixrad(32)` is small (~2 arcmin) next to a typical `angmax`
+(~3 degrees) but there is no reason to accept an inexact margin when an
+exact one is one function call away.
+
+**A second thing this needed that didn't exist yet: a globally
+consistent `angmax`.** Each of the old `*_multiple_data.py` ranks
+computed its own `angmax` from the minimum comoving distance in *its own*
+loaded files only — a latent inconsistency (not previously called out in
+this item, found while implementing it): a rank whose local minimum
+happened to be larger than the true dataset-wide minimum would compute
+too small an `angmax`, searching a narrower disc than the data actually
+requires and silently missing legitimate neighbours near the edge of
+that narrower disc — the same failure shape as the missing-pairs bug
+this item is about, from a different cause. Fixed by having
+`delta_reader.py`/`delta_reader_eboss.py` persist the dataset-wide
+`min_distance` they already compute (previously printed and discarded)
+into a new `data_index.npy`, alongside a `pixel -> file number` map
+built for free while writing `data*.npy`. Every rank derives the same
+`angmax` from it. `min_distance` is saved rather than `angmax` itself,
+so a driver run with a different `rtmax` later still gets the `angmax`
+that setting actually implies, rather than one baked in at extraction
+time.
+
+**Verified two ways on the real DR1 set** (4 files, `--split-number 4`,
+against a 1-file extraction of the same data as ground truth):
+
+- Directly, bypassing the drivers: for every one of the 1446 forests,
+  compared its neighbour set (`forest.neighborhood(data, angmax)`,
+  matched by `forest.name`) between the 1-file dataset and the 4-file
+  dataset loaded through `pixel_partition` for `mpi_size=4`. Exact match
+  for all 1446 forests -- 320,330 total pair-links either way, 0 missing,
+  0 spurious. This is the same measurement #15 originally made as an
+  aggregate `w_hist` sum (24.08% lost); checking every forest's
+  neighbour *set* individually is a strictly stronger test than an
+  aggregate total, which can hide errors that cancel.
+- End to end through the real CLI: `mpirun -np 3 lya2pcf-correlate --cpu`
+  and `mpirun -np 3 lya2pcf-distort` against the 4-file split, both
+  completing correctly (6+5+5 pixels split exhaustively across the 3
+  ranks, sane non-empty output, no NaNs in the distortion matrix).
+- Also checked pixel ownership is exhaustive and non-overlapping across
+  every rank count tried (1, 2, 3, 4, 5, 8 -- including more ranks than
+  the 4 files, the case that would have starved ranks under a
+  files-across-ranks split).
+
+**Known limitation, not fixed here:** `assign_pixels` splits the
+globally *sorted* pixel list into contiguous chunks, same as
+`delta_reader.py` does for files, on the assumption that this keeps a
+rank's buffer needs local to a handful of nearby files. That assumption
+depends on healpix pixel *index* proximity tracking angular proximity,
+which is only true for `nest=True` ordering — `forest_class.py` calls
+`healpy.ang2pix`/`query_disc` without `nest=True`, i.e. RING ordering,
+where pixels in the same latitude ring have nearby indices but adjacent
+rings do not. So a rank's contiguous pixel range is not guaranteed to be
+a spatially compact patch of sky, and in the worst case its buffer could
+span many more files than the "just the neighbouring one or two" case
+this design is optimized for. Not a correctness problem (verified
+above), only a possible efficiency one at real scale (the ~40 GB
+production case) that switching to NESTED ordering would fix -- a
+bigger, separate change (touches every `pix = healpy.ang2pix(...)` call
+site and anything that assumes RING) that is not part of this item.
 
 ## 16. `number_of_neighs` should be derived from the data, not a config guess
 
@@ -1119,10 +1349,14 @@ naming both numbers, instead of leaving a silent mismatch to surface as
 either a CUDA error several layers down or, worse, no error at all.
 
 **Depends on:** nothing structural; the validation-only version is a
-small, independent, low-risk change and could be done first. The full
-`Split_type`-based fix naturally lands together with #15's driver merge,
-since all four drivers currently duplicate the device-assignment logic
-this would replace.
+small, independent, low-risk change and could be done first.
+
+**#15's driver merge (done) halved this duplication, not eliminated
+it.** Four copies of the device-assignment line became two
+(`two_point.py`, `distortion.py`) — the merge only combined each
+driver with its own `*_multiple_data` twin, not the two-point and
+distortion drivers with each other, so the `Split_type`-based fix still
+has two call sites to replace, not one.
 
 ## 18. mpi4py is a hard dependency even for a single process
 
@@ -1149,15 +1383,17 @@ rank/size environment variable set by the launcher (`OMPI_COMM_WORLD_SIZE`,
 `PMI_SIZE`, etc.) is present, and fall back to a trivial rank-0-of-1
 stand-in object otherwise that the rest of each driver already treats
 `comm/mpi_rank/mpi_size` as (so the drivers themselves would not need to
-branch — only the setup at the top of each would). This is a smaller,
-narrower version of what #15's driver merge would touch anyway, since
-all four drivers duplicate this same setup block.
+branch — only the setup at the top of each would).
+
+**#15's driver merge (done) halved this duplication too** -- the same
+setup block now exists in two drivers (`two_point.py`, `distortion.py`)
+instead of four, for the same reason as #17's note above.
 
 **Depends on:** nothing structural; independent of #17, though both are
 about the same "how many processes/GPUs" question from different
 angles — #17 is about the count itself being split across two places,
 this is about the cost of requiring MPI at all for the trivial case of
-one process. Natural to land together with #15's driver merge.
+one process.
 
 ---
 

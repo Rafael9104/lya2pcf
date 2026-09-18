@@ -1,9 +1,12 @@
 """
-    Takes delta files and computes the correlation
+    Takes delta files and computes the correlation. Works the same way
+    whether the extraction wrote one data*.npy file or many
+    (delta_reader.py --split-number): pixels are always split across MPI
+    ranks, and each rank loads only the files its own pixels and their
+    neighbour buffer actually need -- see pixel_partition.py.
 """
 
 import argparse
-import glob
 import os
 import time
 
@@ -12,6 +15,7 @@ from mpi4py import MPI
 
 from . import parameters as params
 from .forest_class import quasar
+from . import pixel_partition
 
 
 def main():
@@ -24,21 +28,19 @@ def main():
     print('worker'+str(mpi_rank)+'will be using gpu number' +cuda_device)
 
     # Writing log files, one per mpi process
-    #if not os.path.exists(corr_dir):
     os.makedirs(params.corr_dir, exist_ok=True)
     log_filename = os.path.join(params.corr_dir, 'thread_' + str(mpi_rank) + '_of_' + str(mpi_size) + '.log')
     log_file = open(log_filename,"w+")
 
     if mpi_rank == 0:
         parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-            description='Takes the data.npy file and computes the two or three point correlation function.')
+            description='Takes the data*.npy files and computes the two point correlation function.')
 
         group2 = parser.add_mutually_exclusive_group(required=True)
         group2.add_argument('--cpu',action='store_true',required=False,
             help='Compute the forest correlation using the cpu.')
         group2.add_argument('--gpu',action='store_true',required=False,
             help='Compute the forest correlation with the help of a GPU.')
-
 
         parser.add_argument('--verbose', action = 'store_true', required = False,
             help = 'Show statistics of computation time. Only computes the correlation for a few forests.')
@@ -48,60 +50,40 @@ def main():
         kwargs = {}
         if args.verbose:
             kwargs['performance'] = True
-
-    print('Loading extracted file.')
-    data = np.load(os.path.join(params.data_dir, 'data1.npy'), allow_pickle=True).item()
-    if mpi_rank == 0:
-
-
-        ####################################################################
-        #  Computing some important parameters and broadcasting the data  #
-        #  to all the nodes if we are using several nodes.
-        ####################################################################
-
-        print('Computing the maximum angle that we are interested in.')
-        log_file.write('\nComputing the maximum angle that we are interested in.')
-
-        dminlist=[]
-        for pixel in data:
-            for forest in data[pixel]:
-                dminlist.append(forest.dc[0])
-        try:
-            dmin  = min(dminlist)
-        except:
-            raise NameError('Empty data. Did you write correctly the input directory?')
-
-        angmax = 2*np.arcsin(0.5*params.rtmax/dmin)
-        shape_hist = (params.numpix_rp, params.numpix_rt)
-
-        print('Minimum comoving distance to a forest (Mpc/h):',dmin)
-        print('Maximum angle between pairs of skewers that are used (rad):', angmax)
-
-        pixels_total=np.array(list(data.keys()))
-        lpix = len(pixels_total)
-        print('Number of non-empty healpix pixels:', lpix)
-        log_file.write('\nNumber of non-empty healpix pixels: ' + str(lpix))
-
-        print('Computing partial histograms for each pixel.')
-
-        # Dividing the total number of pixels between the available mpi kernels
-        pixels_partial = np.array_split(pixels_total, mpi_size)
-
     else:
-        angmax = None
-        pixels_partial = None
-        pixels_total = None
         args = None
         kwargs = None
-        shape_hist = None
 
-    pixels_total = comm.bcast(pixels_total, root = 0)
     args = comm.bcast(args, root = 0)
-    angmax = comm.bcast(angmax, root = 0)
-    shape_hist = comm.bcast(shape_hist, root = 0)
     kwargs = comm.bcast(kwargs, root = 0)
-    pixels_partial = comm.scatter(pixels_partial, root = 0)
 
+    ####################################################################
+    #  Splitting the pixels between the available mpi ranks, and       #
+    #  figuring out which files (own pixels + neighbour buffer) this   #
+    #  rank actually needs to load.                                    #
+    ####################################################################
+
+    index = pixel_partition.load_index(params.data_dir)
+    owned_pixels = pixel_partition.assign_pixels(index['pixel_file'], mpi_size, mpi_rank)
+    angmax = 2*np.arcsin(0.5*params.rtmax/index['min_distance'])
+    shape_hist = (params.numpix_rp, params.numpix_rt)
+
+    print('Maximum angle between pairs of skewers that are used (rad):', angmax)
+    print('Rank', mpi_rank, 'owns', len(owned_pixels), 'pixels.')
+
+    name_partials = '2d_histogram_pixel_'
+    log_file.write('\nComputing 2 point correlation with \nrt_max = ' + str(params.rtmax) +
+     '\nrp_max = ' + str(params.rpmax) + '\npixels in t = ' + str(params.numpix_rt) + '\npixels in p = ' + str(params.numpix_rp))
+    log_file.write('\nThis rank owns ' + str(len(owned_pixels)) + ' pixels.')
+
+    if len(owned_pixels) == 0:
+        log_file.write('\nNo pixels assigned to this rank; nothing to do.')
+        print('Rank', mpi_rank, 'has no pixels to compute; exiting.')
+        return
+
+    buffer_pixels = pixel_partition.find_buffer_pixels(owned_pixels, angmax, set(index['pixel_file']))
+    log_file.write('\nLoaded a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
+    data = pixel_partition.load_rank_data(params.data_dir, owned_pixels, buffer_pixels, index['pixel_file'])
 
     # Moving data dict to the correlation_procedures module
     if args.cpu:
@@ -110,24 +92,20 @@ def main():
         from . import correlation_procedures_pycuda as correlations
     correlations.init(data, log_file, shape_hist, angmax)
 
-    num_pixels_partial = len(pixels_partial)
+    num_pixels_partial = len(owned_pixels)
     log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
-        str(pixels_partial[0]) + ' to ' + str(pixels_partial[-1]))
-
-    name_partials = '2d_histogram_pixel_'
-    log_file.write('\nComputing 2 point correlation with \nrt_max = ' + str(params.rtmax) +
-     '\nrp_max = ' + str(params.rpmax) + '\npixels in t = ' + str(params.numpix_rt) + '\npixels in p = ' + str(params.numpix_rp))
+        str(owned_pixels[0]) + ' to ' + str(owned_pixels[-1]))
 
     log_file.flush()
 
     ###############################################################################
     # This is the core of the program, where the correlation function is computed #
     ###############################################################################
-    
+
     histo = []
     pixel_counter = 0
 
-    for pixel in pixels_partial:
+    for pixel in owned_pixels:
 
         log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
         log_file.flush()

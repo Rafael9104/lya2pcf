@@ -87,8 +87,9 @@ def upload_forests(data, pixel_list = None):
         + 3 * count_forests * itemsize,                   # x, y, z
         "forest data (%d forests, longest %d pixels)" % (count_forests, max_lenght),
         ["split the deltas into more files with the extraction step's "
-         "--split-number and run the correlation over one file at a time "
-         "(lya2pcf-correlate-multi)",
+         "--split-number, and run with more MPI ranks -- each rank only "
+         "loads the files its own pixels (plus their neighbour buffer) "
+         "actually need, not the whole dataset",
          "coadd/rebin the deltas upstream, which shortens every forest",
          "run on more GPUs: each MPI rank takes a share of the pixels"])
 
