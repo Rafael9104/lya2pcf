@@ -623,6 +623,24 @@ always 3D at the driver level). Verified end to end: `order_active`
 launches correctly and `distortion_per_pixel` produces sane, non-zero
 output with the new config.
 
+`pair_correlation`'s hardcoded `threads_per_block = (1, 16, 16)`
+(noted above as staying hardcoded, "since changing it requires changing
+the kernel") turned out to share `2d_threads_per_block` too, same day:
+its `y`/`z` are genuine strided-loop parameters (same shape as
+`order_active`'s), so `threads_per_block = (1,) + params.threads_per_block_2d`
+reuses the same config value for them, changing the launch from
+`(1, 16, 16)` to `(1, 32, 32)`. `x` stays a hardcoded `1` in code, not
+part of the shared config -- it isn't a spare dimension like
+`order_active`'s `z`, it's load-bearing: the kernel reads its
+pixel-in-forest1 index from `blockIdx.x`, never from `threadIdx.x`, so
+`blockDim.x > 1` would re-run the same accumulation redundantly and
+double-count into the histogram. **Verified against the real DR1 set**:
+compared the new `(1, 32, 32)` block against the old `(1, 16, 16)` in
+the same session (`git stash` to isolate the one-line change) -- total
+`w_hist` differs by `1.2e-7` relative, `dw_hist` by `4.2e-6`, both
+consistent with the float32 `atomicAdd` reordering noise already
+measured in #7, not a regression from the larger block.
+
 **c. Possible out-of-bounds GPU writes in
 `distortion_procedures_pycuda.py`.** `init()` sizes `le1`, `le2`,
 `le3`, `le4`, `activeBs`, `activeBs_index` and `size_auxiliars_*` using
