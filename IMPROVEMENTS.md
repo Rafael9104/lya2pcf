@@ -914,8 +914,25 @@ instead of one `pool.map` over everything.
 
 - **Pass 1**, `record_pixel_only`: reads only each file's RA/DEC (no
   delta/weight/lambda arrays, no `quasar` objects) to learn which output
-  pixels it contributes to and how many forests each gets. Cheap enough
-  to run over the whole dataset up front. **One input file does not
+  pixels it contributes to and how many forests each gets. Every file is
+  therefore opened and decompressed *twice* -- once here, once again in
+  pass 2 -- which is **not as cheap as it sounds**, corrected after
+  Josue asked directly: measured metadata-only vs. a full read on the
+  same real file and got 0.042s vs. 0.046s -- almost identical. `fitsio`
+  pays nearly the same cost to open and decompress a `.fits.gz` file
+  regardless of how many columns you read from it; the expensive part is
+  the gzip decompression on open, not the volume subsequently read.
+  Checked the FITS headers too, in case a coarser pixel/region keyword
+  could avoid touching per-forest RA/DEC at all -- none present. So the
+  doubled I/O is real and unavoidable with `fitsio` used this way, not
+  negligible the way "reads only RA/DEC" implies on its own. What kept
+  the measured *total* wall-clock overhead modest (~15-20%, see the
+  timing note below) despite this is that per-file decompression is
+  small next to the *other* cost pass 1 skips -- the per-forest Python
+  work in pass 2 (cosmology interpolation, building `quasar` objects) --
+  not that pass 1 itself is cheap. Whether that ratio holds at the real
+  ~40 GB scale is a reasonable extrapolation (both terms scale with file
+  size) rather than something measured here. **One input file does not
   necessarily map to one output pixel** -- checked on real data before
   assuming otherwise: one DR1 file spans 4 distinct pixels at the
   default `nside=32`. Also checked whether a pixel could be split across

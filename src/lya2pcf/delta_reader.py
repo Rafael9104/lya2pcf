@@ -268,12 +268,21 @@ def main():
     pool = Pool()
 
     ####################################################################
-    # Pass 1: a cheap RA/DEC-only census (no delta/weight/lambda arrays,
-    # no quasar objects) over every file, so the pixel -> output-file
-    # split can be decided before extracting anything expensive. Without
-    # this, deciding the split needs every forest already extracted,
-    # which is exactly the "whole dataset in memory at once" this is
-    # for. One input file does not necessarily map to one output pixel
+    # Pass 1: an RA/DEC-only census (no delta/weight/lambda arrays, no
+    # quasar objects) over every file, so the pixel -> output-file split
+    # can be decided before extracting anything expensive. Without this,
+    # deciding the split needs every forest already extracted, which is
+    # exactly the "whole dataset in memory at once" this is for.
+    #
+    # This still opens and decompresses every file a second time in
+    # pass 2 -- not free, and not as cheap as "only reads RA/DEC" makes
+    # it sound (measured: fitsio pays nearly the same cost to open a
+    # .fits.gz file regardless of how many columns are read from it, see
+    # IMPROVEMENTS.md #14/#4). It skips per-forest Python work (cosmology
+    # interpolation, building quasar objects), which is what keeps the
+    # measured total overhead modest despite the doubled file I/O.
+    #
+    # One input file does not necessarily map to one output pixel
     # (confirmed on real data, see record_pixel_only), so this has to be
     # a real census, not just a per-file lookup.
     ####################################################################
