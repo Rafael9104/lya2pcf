@@ -159,6 +159,81 @@ def record_from_deltas(file):
         list_of_forests.append(forest_data)
     return list_of_forests
 
+
+def group_files_by_shared_pixels(file_pixels, pixel_forest_count, split_number):
+    """Groups delta files into up to split_number output chunks so that
+    every file is read exactly once -- any two files that share a pixel
+    are kept in the same chunk (a chunk boundary can never cut through a
+    file's own pixels, so pass 2 never has to re-extract a file for a
+    second chunk).
+
+    This gives up exact pixel-count balance across chunks (a
+    file-sharing pixel group has to go somewhere as a whole) in exchange
+    for zero redundant I/O -- on the real DR1 set, where no pixel is
+    shared between files, this costs nothing: it degenerates to the same
+    thing as balancing individual files. Chunks are still forest-count
+    balanced as well as pixel-count in the process, which the previous
+    sorted-pixel-range split (pure pixel count) was not.
+
+    Returns (chunk_files: {chunk_number: [files]},
+             pixel_file: {pixel: chunk_number}).
+    """
+    # Union-find over files, connected whenever they share a pixel.
+    parent = {file: file for file in file_pixels}
+
+    def find(file):
+        root = file
+        while parent[root] != root:
+            root = parent[root]
+        while parent[file] != root:
+            parent[file], file = root, parent[file]
+        return root
+
+    def union(a, b):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[ra] = rb
+
+    pixel_to_files = {}
+    for file, pixels in file_pixels.items():
+        for pixel in pixels:
+            pixel_to_files.setdefault(pixel, []).append(file)
+    for files in pixel_to_files.values():
+        for file in files[1:]:
+            union(files[0], file)
+
+    components = {}
+    for file in file_pixels:
+        components.setdefault(find(file), []).append(file)
+
+    def forest_count(files):
+        pixels = set()
+        for file in files:
+            pixels |= file_pixels[file]
+        return sum(pixel_forest_count[p] for p in pixels)
+
+    # Largest components first (classic "longest processing time first"
+    # bin-packing heuristic), each going to whichever chunk is currently
+    # smallest -- a reasonable balance without needing every arrangement
+    # checked, which for many components isn't practical anyway.
+    ranked_components = sorted(components.values(), key=forest_count, reverse=True)
+
+    chunk_files = {i: [] for i in range(1, split_number + 1)}
+    chunk_totals = {i: 0 for i in range(1, split_number + 1)}
+    for files in ranked_components:
+        target = min(chunk_files, key=lambda i: chunk_totals[i])
+        chunk_files[target].extend(files)
+        chunk_totals[target] += forest_count(files)
+
+    pixel_file = {}
+    for chunk_number, files in chunk_files.items():
+        for file in files:
+            for pixel in file_pixels[file]:
+                pixel_file[pixel] = chunk_number
+
+    return chunk_files, pixel_file
+
+
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description='Takes delta files by picca and stores data in data.npy.')
@@ -215,22 +290,12 @@ def main():
     del census
 
     list_of_pixels = sorted(pixel_forest_count)
-    pixels_partial = np.array_split(list_of_pixels, args.split_number)
-    pixel_file = {}
-    for i, subset in enumerate(pixels_partial, start=1):
-        for pixel in subset:
-            pixel_file[int(pixel)] = i
 
-    # Which files does each output chunk actually need? A file that
-    # contributes to pixels split across more than one chunk is read
-    # again for each one -- wasteful when it happens, but correct
-    # either way, and the census above already shows it need not be
-    # rare: whether it happens at all depends on how the pixels a file
-    # touches happen to fall across --split-number's chunk boundaries.
-    chunk_files = {i: set() for i in range(1, args.split_number + 1)}
-    for file, pixels in file_pixels.items():
-        for pix in pixels:
-            chunk_files[pixel_file[pix]].add(file)
+    # Deciding the split this way (instead of a pixel-sorted-range split)
+    # guarantees no file is ever read twice -- see
+    # group_files_by_shared_pixels's own docstring for why.
+    chunk_files, pixel_file = group_files_by_shared_pixels(
+        file_pixels, pixel_forest_count, args.split_number)
 
     ####################################################################
     # Pass 2: extract and save one output chunk at a time. Only that
@@ -251,8 +316,12 @@ def main():
             data_list = pool.map(record_from_deltas, files_for_chunk)
             for list_of_forests in data_list:
                 for forest_data in list_of_forests:
-                    # A file can feed more than one chunk (see chunk_files
-                    # above); only keep the forests this chunk actually owns.
+                    # Should always be true by construction --
+                    # group_files_by_shared_pixels keeps every pixel a
+                    # file touches in the same chunk as the file itself.
+                    # Kept as a guard rather than assumed silently: if it
+                    # ever fires, that is a bug in the grouping, not an
+                    # expected case to route around.
                     if pixel_file.get(forest_data.pix) != chunk_number:
                         continue
                     j += 1

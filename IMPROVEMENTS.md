@@ -925,25 +925,37 @@ instead of one `pool.map` over everything.
   consistent with DESI's file-level pixelization being coarser than this
   `nside`), but the design does not actually depend on that holding:
   the census is a true many-to-many map, built the same way regardless.
-- From the census, the pixel -> output-file split is decided exactly as
-  before (`np.array_split` on the sorted pixel list) -- same chunks,
-  same `pixel_file` mapping, verified byte-identical to the old
-  single-pass code on the real DR1 set (see below).
+- **The first version of this split the pixel list into contiguous
+  sorted ranges** (`np.array_split`, matching item #15's own chunking),
+  which meant a file whose pixels landed on both sides of a range
+  boundary got re-extracted once per chunk it fed. Measured, not
+  assumed: 3 timed trials each at `--split-number` 1/4/16 on the real
+  DR1 set showed old (single-pass) code flat at ~2.1s regardless of
+  split-number, but this first version growing with it -- 2.2s / 2.6s
+  (+24%) / 4.3s (+~100%) -- from redundant I/O scaling with how often a
+  chunk boundary happened to cut through a file. Reported to Josue, who
+  judged that not worth the memory fix and asked for the alternative
+  this item originally dismissed.
+- **Replaced with `group_files_by_shared_pixels`**: unions files
+  transitively whenever they share a pixel (so a chunk boundary can
+  never cut through a file), then greedily packs the resulting groups
+  into `--split-number` chunks, largest (by forest count) first into
+  whichever chunk is currently smallest. Every file is read exactly
+  once, by construction, at any `--split-number` -- re-verified on the
+  real DR1 set with the same 3-trial timings: now flat at ~2.0-2.4s
+  regardless of split-number (1, 4, 16), matching the old code's
+  flatness rather than its scaling growth; the remaining ~15-20% above
+  the old code's ~2.1s is the one-time census pass itself, not a
+  growing cost. **Trade-off knowingly accepted**: chunks are no longer
+  contiguous pixel-ID ranges, so the property #15 already flagged as
+  unreliable for buffer locality (RING ordering) is now not even
+  attempted -- traded away on purpose for zero redundant I/O, not lost
+  by accident.
 - **Pass 2** extracts and saves one output chunk at a time: only the
-  files that chunk's pixels actually need are read, only that chunk's
-  forests are ever resident, and `data*.npy` is written and freed
+  files that chunk actually needs are read, only that chunk's forests
+  are ever resident, and `data*.npy` is written and freed
   (`del subdata`) before the next chunk starts. This is genuinely
   sequential -- chunk 2 cannot start until chunk 1 is on disk and gone.
-- **Cost of the two-pass split:** a file whose pixels land in more than
-  one output chunk gets re-extracted once per chunk it feeds (confirmed
-  happening on the real DR1 set at `--split-number 4`: 2 of the 4 files
-  got read twice). Wasteful when it happens, not a correctness problem
-  either way -- the alternative (grouping by input file instead of by
-  pixel range) avoids re-reads entirely but gives up `--split-number`'s
-  contiguous-pixel-range property for output chunks, and that property
-  is already unreliable for its one purpose (buffer locality) per #15's
-  own RING-ordering caveat, so it was not judged worth trading pixel-
-  range chunking away for.
 - **`--statistics`'s neighbour count needed the same buffer-zone
   treatment `two_point.py`/`distortion.py` got in #15**, for the same
   reason: computed one chunk at a time now (to stay out of the
@@ -954,18 +966,27 @@ instead of one `pool.map` over everything.
   way, reusing `pixel_partition.find_buffer_pixels`/`load_rank_data`
   directly rather than a second implementation.
 
-**Verified against the real DR1 set** (`git worktree` of the pre-change
-commit as the old baseline, same data, `--split-number 4` both ways):
+**Verified against the real DR1 set**, in two stages matching the two
+versions above:
 
-- `data_index.npy` (`pixel_file` and `min_distance`) byte-identical
-  between old and new.
-- Every one of the 4 output `data*.npy` files has identical pixel sets,
-  identical forest counts, and identical forest identities (compared by
-  `forest.name`) between old and new.
-- Re-ran #15's own per-forest neighbour-set verification (see #15) with
-  the new extraction's output: still an exact match against the 1-file
-  ground truth, 320,330 pair-links, 0 missing, 0 spurious -- confirms
-  this change didn't disturb what #15 already fixed.
+- The first (sorted-pixel-range) version was checked against a `git
+  worktree` of the pre-change commit, same data, `--split-number 4`
+  both ways: `data_index.npy` byte-identical, every output file's
+  pixels/forest-counts/forest-identities identical.
+- The `group_files_by_shared_pixels` replacement necessarily produces a
+  *different* `pixel_file` mapping (chunks follow file connectivity now,
+  not sorted pixel ranges), so a byte-identical comparison against the
+  old code no longer applies. Verified instead against a `--split-number
+  1` extraction of the same data as ground truth: reconstructed the full
+  dataset from whichever chunk each pixel actually landed in and
+  compared every pixel's forest set (by `forest.name`) to the ground
+  truth -- exact match, and confirmed each of the DR1 set's 4 chunks
+  ended up holding exactly one input file's worth of pixels (the
+  degenerate, zero-sharing case already established under #15).
+- Re-ran #15's own per-forest neighbour-set verification (see #15)
+  against this version's output too: still an exact match against the
+  1-file ground truth, 320,330 pair-links, 0 missing, 0 spurious --
+  confirms neither extraction change disturbed what #15 already fixed.
 - `--statistics`'s new buffer-aware neighbour count: `sum(neighbors) =
   309425` on the real DR1 set -- an exact match to the figure already on
   record above ("1446 forests carrying 309,425 neighbour entries"),
@@ -982,6 +1003,15 @@ commit as the old baseline, same data, `--split-number 4` both ways):
   language behaviour, not scale-dependent), the same way the original
   problem was found -- not on a large-scale measurement, which nothing
   available here could produce.
+- **The census pass itself was checked directly**, since "does pass 1
+  load much into memory" is a fair question on its own: ran
+  `record_pixel_only` via `pool.map` in isolation and compared its peak
+  RSS (229 MB) against the full extraction's (350.7 MB) on the same DR1
+  set. The ~121 MB difference is attributable to pass 2's actual forest
+  data (flux/weight arrays, `quasar` objects), which pass 1 never
+  touches -- it returns only `(unique_pix, counts)` per file, so its own
+  footprint scales with the number of distinct pixels in the dataset,
+  not with forest count or delta-array size.
 
 ## 15. Merge the `*_multiple_data` drivers, and add a buffer zone so no pair is missed
 
