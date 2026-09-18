@@ -85,16 +85,19 @@ nz: 10000
 # histograms in single precision, which loses precision as the bin sums grow.
 gpu_precision: float64
 
-# The two-point correlation kernel sets its own block size internally
-# (correlation_procedures_pycuda.py), so it is not configurable here.
+# Block size for the distortion kernels that are genuinely 3D
+# (precompute_distances, compute_etas, compute_d).
 distortion_threads_per_block: [8, 32, 4]
 
-# Block size for kernels that only need a two-dimensional launch --
-# currently just order_active in the distortion path, which indexes
-# (histogram bin, neighbour) and never reads a z thread/block index.
-# CUDA block dimensions are always 3D at the driver level (pycuda's
-# block= rejects anything but a 3-tuple), so the code appends the
-# always-1 z dimension itself rather than carrying it here.
+# Block size for kernels whose real work is two-dimensional: shared by
+# order_active in the distortion path (indexes histogram bin x
+# neighbour) and by pair_correlation's y/z (indexes neighbour x pixel
+# within that neighbour). pair_correlation also needs an x dimension,
+# but that one is kernel-specific (its value must stay 1, or the kernel
+# double-counts) and hardcoded in correlation_procedures_pycuda.py
+# rather than carried here. CUDA block dimensions are always 3D at the
+# driver level (pycuda's block= rejects anything but a 3-tuple), so each
+# caller appends whatever extra dimension it needs itself.
 2d_threads_per_block: [32, 32]
 max_threads: 1024
 
