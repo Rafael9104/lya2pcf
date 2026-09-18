@@ -151,18 +151,23 @@ bit-identical between runs). Also compiled and ran the distortion kernels
 (`distortion_procedures_pycuda`) through the new shared `compile_kernels()`
 path with no errors.
 
-**Not verified:** the CPU correlation path (`correlation_procedures_cpu.py`,
-only import statements changed) was still running a same-input comparison
-against the pre-move code when this was written — numba + the O(forests²)
-pair search make the 16-pixel DR1 set slow enough that the run did not
-finish in this session; the only change to that file is import syntax
-(`import parameters as params` → `from . import parameters as params`),
-so this is expected to be a formality, but state it as unchecked rather
-than assumed. `two_point_multiple_data.py`, `distortion.py`,
-`distortion_multiple_data.py`, `delta_reader_eboss.py` and `post_processing.py`
-were checked by reading the diff (import-only changes plus the `main()`
-wrap) but not executed end-to-end here — none of them changed logic, all
-of them changed only imports and the top-level-code-to-function wrapping.
+**CPU correlation path, verified after the fact:** the same-input
+comparison against the pre-move code (`correlation_procedures_cpu.py`,
+only import statements changed) finished after this was first written —
+numba plus the O(forests²) pair search took about 8 minutes on the
+16-pixel DR1 set, run in the background while the rest of this item was
+wrapped up. All 16 pixel histograms (`w_hist` and `dw_hist`) came back
+**bit-identical** to the pre-move code, as expected for a path with no
+logic changes and no floating-point non-determinism (unlike the GPU
+path above, the CPU kernel does an ordinary in-order sum, not atomics).
+
+**Still not executed end-to-end:** `two_point_multiple_data.py`,
+`distortion.py`, `distortion_multiple_data.py`, `delta_reader_eboss.py`
+and `post_processing.py` were checked by reading the diff (import-only
+changes plus the `main()` wrap) and, for `post_processing.py`, by
+actually running `lya2pcf-post` on real correlation output (see above) —
+none of them changed logic, all of them changed only imports and the
+top-level-code-to-function wrapping.
 
 ## 2. `parameters.py` → `parameters.yml`
 
