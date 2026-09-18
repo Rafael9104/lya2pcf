@@ -886,13 +886,32 @@ recover that too.
    the working directory. On the DR1 set extraction went from 2.44 s to
    1.94 s (~20%) with files 6% smaller; the saving is larger on denser
    data, where neighbour counts per forest are higher.
-4. `--split-number` already exists and lowers the peak per save, at the
-   cost of more files.
+4. `--split-number` already exists and lowers the peak *per `np.save`
+   call*, at the cost of more files -- but **not** the peak for
+   extraction as a whole. Checked while working on #15 (2026-09-18):
+   `pool.map(record_from_deltas, directory)` is synchronous, so it
+   doesn't return until every worker's forests are collected into one
+   list in the main process -- at that point the whole dataset is
+   resident in memory no matter what `--split-number` is; splitting
+   only controls what happens afterwards, as `data` gets chopped up and
+   saved/popped piece by piece. A real memory measurement on the DR1 set
+   (`/usr/bin/time -v`, `--split-number 1` vs `4`) showed only an 11%
+   difference in peak RSS (350.7 MB vs 311.7 MB) -- consistent with this,
+   though the set is too small (~50 MB) to be a scale-representative
+   test on its own; the code-flow argument above doesn't depend on scale
+   to hold, `Pool.map()`'s semantics are what they are regardless of
+   dataset size.
 
 **Depends on:** (1) and (2) are #4 and #13, and are where the real
 15-minute saving is. (3) is done and helps, but does not change the
 fundamental problem: as long as the file holds pickled Python objects,
-saving is slow and memory-hungry.
+saving is slow and memory-hungry. (4) needs a real fix too, now that its
+limit is clear: stream forests to their eventual file as they're
+extracted (or extract per-file rather than via one `pool.map` across all
+files at once) instead of collecting everything before any of it is
+saved -- otherwise extraction itself remains bounded by total dataset
+size, independent of `--split-number`, which matters directly for a
+~40 GB run.
 
 ## 15. Merge the `*_multiple_data` drivers, and add a buffer zone so no pair is missed
 
