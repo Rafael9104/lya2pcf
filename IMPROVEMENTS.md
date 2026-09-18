@@ -4,6 +4,14 @@ Working notes from 2026-09-10. Not committed to git by default (personal
 planning doc, not project documentation) — delete, commit, or move it
 wherever you like.
 
+## Open issues (2026-09-18)
+
+- [#1](https://github.com/Rafael9104/lya2pcf/issues/1) — number_of_neighs
+  causes an error → item #16 below.
+- [#16](https://github.com/Rafael9104/lya2pcf/issues/16) — bring this
+  file up to date (done-markers, stale PR statuses, README's Things to
+  do) → this housekeeping pass, PR #17.
+
 ## 1. `src/lya2pcf/` layout + pip-installable package
 
 Currently everything is a flat collection of scripts at the repo root
