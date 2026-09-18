@@ -16,18 +16,18 @@ Install lya2pcf into a virtual environment of your choice (conda, venv, or
 otherwise -- pip resolves every dependency itself, including `mpi4py`,
 `healpy` and `fitsio`, so no separate conda install step is needed):
 ```
-$ pip install -e .
-```
-This is enough for the CPU correlation path and the extraction/post-processing
-steps. Anywhere you will use a GPU -- the correlation's `--gpu` path, and the
-distortion matrix, which is GPU-only -- pull in `pycuda` too:
-```
 $ pip install -e ".[gpu]"
 ```
 `pycuda` has no prebuilt wheel: it compiles against whatever CUDA toolkit
 (`nvcc` plus headers) is already on the machine, so that needs to be in
 place first (a module load on a cluster, or the CUDA toolkit installed
 locally) -- `pip` cannot supply it.
+
+If you only need the CPU correlation path and the extraction/post-processing
+steps -- no GPU available, or just testing that part -- drop the extra:
+```
+$ pip install -e .
+```
 
 On an MPI cluster, `mpi4py`'s wheel links whatever MPI implementation it
 finds on the library search path at import time, which is not necessarily
