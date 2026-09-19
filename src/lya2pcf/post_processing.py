@@ -195,12 +195,15 @@ def main():
     fits_file = fitsio.FITS(os.path.join(params.corr_dir, fits_name_file), 'rw')
     
     n_rows = params.numpix_rp * params.numpix_rt
-    matrix_type = str(int(n_rows))+"D"
-    dtype=[('DA', 'f8'), ('RP', 'f8'), ('RT', 'f8'), ('CO',matrix_type), ('DM',matrix_type)]	
+    matrix_type =  ('f8', (n_rows,))
+    dtype=[('DA', 'f8'), ('RP', 'f8'), ('RT', 'f8'), ('Z', 'f8'), ('CO',matrix_type), ('DM',matrix_type)]   
     table_data = np.zeros(n_rows, dtype=dtype)
     table_data['DA'] = correlation.flatten()
+    # The values of RP and RT are in the center of the bins, while Z is a constant. Later I will compute the weighted
+    # averages
     table_data['RP'] = rp.flatten()
     table_data['RT'] = rt.flatten()
+    table_data['Z']  = 2.38*np.ones(n_rows)
     table_data['CO'] = covariance
     table_data['DM'] = distortion
     
