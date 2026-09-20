@@ -20,6 +20,8 @@ Every other item on this list is done. Remaining:
 - **#17** — Multi-GPU runs split "how many GPUs" across two unrelated
   places
 - **#18** — mpi4py is a hard dependency even for a single process
+- **#20** — Streaming GPU upload: host RAM per rank no longer grows with the
+  slice (implemented on `feat/streaming-upload`, measured 2026-09-19)
 
 ## 1. `src/lya2pcf/` layout + pip-installable package
 
@@ -1423,3 +1425,65 @@ one process.
    lifetime/cleanup, race conditions between ranks). Do it last, on a
    stable base, and test carefully on a real multi-GPU node before
    trusting results from it.
+
+## 20. Streaming GPU upload (host RAM independent of the slice)
+
+**The problem.** With several ranks on one node (one per GPU), each rank
+first loaded every forest of its slice (owned pixels plus the neighbour
+buffer) into host memory, packed them into flat host arrays as large as the
+GPU buffers, and only then uploaded. Measured on the full DESI DR1 set
+(428,403 forests), for slices of 40k and 70k forests: ~32 KB of resident
+memory per forest after loading and ~55-58 KB per forest at the upload
+peak. Extrapolated to the worst 4-GPU slice (243,389 forests): ~8.6 GB
+resident and ~14-15 GB peak **per rank**, i.e. 57-60 GB for four ranks.
+
+**The change (`src/lya2pcf/streaming_upload.py`, `pixel_partition.py`).**
+- `data_index.npy` now also holds `pixel_count` (forests per pixel) and
+  `max_lenght`, written by `lya2pcf-extract`/`-eboss`. For data extracted
+  before that, `lya2pcf-index-stats --data-dir DIR` (or
+  `python -m lya2pcf.pixel_partition`) adds them by reading each
+  `data*.npy` once (2 min 13 s for the 14 GB DR1 set).
+- `pixel_partition.plan_rank_data` gives every forest of a rank its GPU slot
+  (pixels in increasing order, forests in file order) from the index alone,
+  before any data file is read. The GPU buffers are allocated once, at their
+  final size, after the same memory check as before.
+- `pixel_partition.iter_plan_files` loads the `data*.npy` files one at a
+  time; `stream_forests_to_gpu` packs one pixel's forests into a small
+  block, copies it to its offset in the GPU buffers, and then drops each
+  forest's per-pixel arrays. The host keeps only what the loops still use:
+  `x, y, z, ra, name` (`neighborhood`), `index`, and a new `num_points`
+  (the number of valid pixels). Note `forest.lenght` is *not* that: it is the
+  unmasked number of wavelengths (2716 for DR1), so `len(forest.dc)` could not
+  simply become `forest.lenght`.
+- `two_point.py` and `distortion.py` use it on the GPU path
+  (`init(..., plan=plan)`); the `--cpu` path keeps the old loader, since it
+  needs every array. The old `init(data)` path still works.
+
+**Measured (full DR1 data, GTX 970, float32, worst 120/240-chunk slices;
+peak host RAM, `VmHWM`):**
+
+| | old loader | streaming |
+|---|---|---|
+| correlation, 70,536 forests | 4.67 GB | **0.67 GB** |
+| distortion, 40,211 forests | 3.15 GB | **0.63 GB** |
+
+Streaming is flat between the two slice sizes, as it should be (peak ≈ one
+data file plus the light metadata), so the 243k-forest slice should also be
+under ~1 GB instead of ~14-15 GB. Not measured at that size: it does not fit
+on this GPU. Initialisation took 77-90 s for these slices (cold disk cache;
+the old loader spent 100-220 s loading in the earlier measurement).
+
+**Checked.** Small set (1,446 forests, 4 files): 1 rank, and `mpirun -np 2`,
+match the previous results to 6e-6 - 9e-6 (histograms) and 1.7e-6 (distortion),
+float32 noise. Full-data slices vs the old loader on the same pixels:
+correlation 1.1e-5 - 1.7e-5, distortion 3.6e-6 - 8.2e-6; and vs the 12-hour
+full run 1.5e-5 - 2.3e-5. The kernel's `Error in cos12` message (float32
+rounding of `cos12` slightly above 1 for nearly parallel forests) appears in
+both paths, and 196,608 times in the earlier full run.
+
+**Not done / caveats.** `delta_reader_eboss.py`'s new index keys were not run
+(no eBOSS data here). The CPU path is unchanged. Only the neighbour-search
+part of a forest stays on the host; if a future change needs another
+per-pixel field on the host, it has to be added to `stream_forests_to_gpu`'s
+kept fields. No multi-node run: RAM per rank is measured, not the 4-GPU run.
+

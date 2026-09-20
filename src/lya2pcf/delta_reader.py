@@ -315,6 +315,7 @@ def main():
     max_lenght = 0
     min_distance = 1e10
     j = 0
+    pixel_count = {}
 
     for chunk_number in range(1, args.split_number + 1):
         files_for_chunk = sorted(chunk_files[chunk_number])
@@ -340,6 +341,7 @@ def main():
                     if forest_data.dc[0] < min_distance:
                         min_distance = forest_data.dc[0]
                     subdata.setdefault(forest_data.pix, []).append(forest_data)
+                    pixel_count[int(forest_data.pix)] = pixel_count.get(int(forest_data.pix), 0) + 1
             del data_list
         np.save(os.path.join(args.data_dir, 'data' + str(chunk_number)), subdata)
         del subdata
@@ -355,8 +357,12 @@ def main():
     # than the angmax derived from it, so a driver run with a different
     # rtmax later still gets the angmax that setting actually implies.
     # See IMPROVEMENTS.md #15.
+    # pixel_count and max_lenght let a rank plan exactly which GPU slot every
+    # forest goes to, and size the GPU buffers, before reading any data file
+    # (the streaming upload in streaming_upload.py).
     np.save(os.path.join(args.data_dir, 'data_index'),
-            {'pixel_file': pixel_file, 'min_distance': min_distance})
+            {'pixel_file': pixel_file, 'min_distance': min_distance,
+             'pixel_count': pixel_count, 'max_lenght': int(max_lenght)})
 
     # The neighbour search is only needed for these diagnostics: the
     # correlation and distortion both call forest.neighborhood() and

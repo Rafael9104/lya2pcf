@@ -91,8 +91,11 @@ def main():
     # See delta_reader.py's data_index.npy for what this is for -- the
     # multi-file drivers need it even for a single-file extraction like
     # this one, so they don't need a separate code path for that case.
+    # pixel_count and max_lenght: see delta_reader.py.
     np.save(os.path.join(args.data_dir, 'data_index'),
-            {'pixel_file': {int(p): 1 for p in data}, 'min_distance': min_distance})
+            {'pixel_file': {int(p): 1 for p in data}, 'min_distance': min_distance,
+             'pixel_count': {int(p): len(forests) for p, forests in data.items()},
+             'max_lenght': int(max(len(f.dc) for forests in data.values() for f in forests))})
 
 
 if __name__ == '__main__':

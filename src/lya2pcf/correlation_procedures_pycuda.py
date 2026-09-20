@@ -8,6 +8,7 @@ import pycuda.gpuarray as gpuarray
 
 from . import parameters as params
 from . import gpu_support
+from . import streaming_upload
 
 
 # The kernel's precision and the dtype of the buffers we upload to it have to
@@ -41,9 +42,12 @@ class ForestBuffers:
     numpix_d: object
     max_lenght: int
     forest_count: int
+    # Set only by the streamed upload: the {pixel: [forests]} dict with the
+    # heavy arrays already dropped (see streaming_upload.py).
+    data: object = None
 
 
-def upload_forests(data, pixel_list = None):
+def upload_forests(data, pixel_list = None, plan = None):
     """ Packs forests into the flat gran_* host arrays and uploads them to
     the GPU. This is the host-to-device transfer any GPU code over the same
     forests needs, independent of which correlation is computed afterwards.
@@ -56,25 +60,35 @@ def upload_forests(data, pixel_list = None):
                 dataset is uploaded, careful should be taken when changing this option the gpu needs more data than
                 the pixels that it is computing, it also needs the neigboring pixels.
 
+    plan        pixel_partition.ForestPlan
+                Optional. If given, `data` is ignored and the forests are read from the
+                data*.npy files one at a time and uploaded pixel by pixel, never all held
+                in host memory (streaming_upload.py). The light forest dict comes back in
+                the returned ForestBuffers.data.
+
     Returns a ForestBuffers with the device pointers and the max_lenght the
     buffers were sized from. Also sets forest.index on every uploaded forest.
     """
-    if not pixel_list:
-        pixel_list = list(data.keys())
+    if plan is not None:
+        count_forests = plan.count_forests
+        max_lenght = np.int32(plan.max_lenght)
+    else:
+        if not pixel_list:
+            pixel_list = list(data.keys())
 
-    # max_lenght is a property of whichever data is actually loaded, not a
-    # static parameter, so it's computed here rather than read from parameters.
-    count_forests = 0
-    max_lenght = 0
-    for pixel_aux in pixel_list:
-        for forest in data[pixel_aux]:
-            count_forests += 1
-            forest_lenght = len(forest.we)
-            if forest_lenght > max_lenght:
-                max_lenght = forest_lenght
-    # The kernel takes this as an int argument, which pycuda can only marshal
-    # from a fixed-width type, not a plain Python int.
-    max_lenght = np.int32(max_lenght)
+        # max_lenght is a property of whichever data is actually loaded, not a
+        # static parameter, so it's computed here rather than read from parameters.
+        count_forests = 0
+        max_lenght = 0
+        for pixel_aux in pixel_list:
+            for forest in data[pixel_aux]:
+                count_forests += 1
+                forest_lenght = len(forest.we)
+                if forest_lenght > max_lenght:
+                    max_lenght = forest_lenght
+        # The kernel takes this as an int argument, which pycuda can only marshal
+        # from a fixed-width type, not a plain Python int.
+        max_lenght = np.int32(max_lenght)
 
     # Checked before the host arrays are built, not just before the uploads:
     # these buffers are the same size on both sides, so on a large dataset
@@ -92,6 +106,15 @@ def upload_forests(data, pixel_list = None):
          "actually need, not the whole dataset",
          "coadd/rebin the deltas upstream, which shortens every forest",
          "run on more GPUs: each MPI rank takes a share of the pixels"])
+
+    if plan is not None:
+        big, small, light_data = streaming_upload.stream_forests_to_gpu(
+            plan, ('dc', 'rx', 'ry', 'rz', 'we', 'dw'), ('x', 'y', 'z'), myfloat)
+        numpix_d = gpuarray.to_gpu(np.array([params.numpix_r, params.numpix_mu, params.numpix_theta], dtype = np.int32))
+        return ForestBuffers(
+            gran_dc_d=big['dc'], gran_rx_d=big['rx'], gran_ry_d=big['ry'], gran_rz_d=big['rz'],
+            gran_we_d=big['we'], gran_dw_d=big['dw'], gran_x_d=small['x'], gran_y_d=small['y'], gran_z_d=small['z'],
+            numpix_d=numpix_d, max_lenght=max_lenght, forest_count=count_forests, data=light_data)
 
     gran_dc = np.zeros((count_forests * max_lenght), dtype = myfloat)
     gran_rx = np.zeros((count_forests * max_lenght), dtype = myfloat)
@@ -117,6 +140,7 @@ def upload_forests(data, pixel_list = None):
             gran_y[count] = forest.y
             gran_z[count] = forest.z
             forest.index = count
+            forest.num_points = len_forest
             count += 1
 
     lenght_data = gran_dw.nbytes
@@ -149,7 +173,7 @@ def upload_forests(data, pixel_list = None):
         numpix_d=numpix_d, max_lenght=max_lenght, forest_count=count_forests)
 
 
-def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
+def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None, plan = None):
     """ This function copies all the data from the forests to the GPU to reduce the overhead
     of copying it at every call. Might need to be more selective with larger datasets.
     Parammeters:
@@ -185,7 +209,9 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     shape_hist = shape_hist_aux
     angmax = angmax_aux
 
-    buffers = upload_forests(data, pixel_list)
+    buffers = upload_forests(data, pixel_list, plan)
+    if plan is not None:
+        data = buffers.data
     gran_dc_d = buffers.gran_dc_d
     gran_rx_d = buffers.gran_rx_d
     gran_ry_d = buffers.gran_ry_d
@@ -197,6 +223,8 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     gran_z_d = buffers.gran_z_d
     numpix_d = buffers.numpix_d
     max_lenght = buffers.max_lenght
+
+    return data
 
 
 def two_point_per_pixel(pixel, **kargs):
@@ -238,10 +266,10 @@ def two_point_per_pixel(pixel, **kargs):
         if len(neighbors) == 0:
             # This forest have zero neighbors
             continue
-        forest1_lenght = len(forest1.dc)
+        forest1_lenght = forest1.num_points
         base = np.array([forest1.index, forest1_lenght, len(neighbors)],dtype=np.int32)
         neigh_index = np.array([forest2.index for forest2 in neighbors],dtype=np.int32)
-        neigh_sizes = np.array([len(forest2.dc) for forest2 in neighbors], dtype = np.int32)
+        neigh_sizes = np.array([forest2.num_points for forest2 in neighbors], dtype = np.int32)
         base_d = gpuarray.to_gpu(base)
         neigh_index_d = gpuarray.to_gpu(neigh_index)
         neigh_sizes_d = gpuarray.to_gpu(neigh_sizes)

@@ -74,10 +74,12 @@ def main():
 
     if len(owned_pixels) > 0:
         buffer_pixels = pixel_partition.find_buffer_pixels(owned_pixels, angmax, set(index['pixel_file']))
-        log_file.write('\nLoaded a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
-        data = pixel_partition.load_rank_data(params.data_dir, owned_pixels, buffer_pixels, index['pixel_file'])
+        log_file.write('\nFound a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
 
-        distortion.init(data, log_file, shape_hist, angmax, float(args.excluded))
+        # Streamed to the GPU one data file at a time; see streaming_upload.py.
+        plan = pixel_partition.plan_rank_data(params.data_dir, index, owned_pixels, buffer_pixels)
+        log_file.write('\nStreaming ' + str(plan.count_forests) + ' forests from ' + str(len(plan.files)) + ' data files to the GPU.')
+        data = distortion.init(None, log_file, shape_hist, angmax, float(args.excluded), plan = plan)
 
         ###############################################################################
         # This is the core of the program, where the distortion matrix is computed    #

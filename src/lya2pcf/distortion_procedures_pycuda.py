@@ -8,6 +8,7 @@ import pycuda.gpuarray as gpuarray
 
 from . import parameters as params
 from . import gpu_support
+from . import streaming_upload
 
 random.seed(1)
 mod = gpu_support.compile_kernels()
@@ -16,7 +17,7 @@ compute_etas = mod.get_function("compute_etas")
 compute_d = mod.get_function("compute_d")
 order_active = mod.get_function("order_active")
 
-def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_list = None):
+def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_list = None, plan = None):
     """ This function copies all the data from the forests to the GPU to reduce the overhead
     of copying it at every call. Might need to be more selective with larger datasets.
     Parammeters:
@@ -28,7 +29,13 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
                 dataset is uploaded, careful should be taken when changing this option the gpu needs more data than
                 the pixels that it is computing, it also needs the neigboring pixels.
 
-    Returns a dictionary from names of forests to positions in the forest array
+    plan        pixel_partition.ForestPlan
+                Optional. If given, `data_aux` is ignored and the forests are read from the
+                data*.npy files one at a time and uploaded pixel by pixel, never all held
+                in host memory (streaming_upload.py).
+
+    Returns the {pixel: [forests]} dict used by distortion_per_pixel (with the heavy
+    per-pixel arrays already dropped when `plan` is used).
     """
     global data
     global log_file
@@ -62,22 +69,26 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
 
     total_bins = np.prod(shape_hist)
 
-    if not pixel_list:
-        pixel_list = list(data.keys())
+    if plan is not None:
+        count_forests = plan.count_forests
+        max_lenght = np.int32(plan.max_lenght)
+    else:
+        if not pixel_list:
+            pixel_list = list(data.keys())
 
-    # max_lenght is a property of whichever data is actually loaded, not a
-    # static parameter, so it's computed here rather than read from parameters.
-    count_forests = 0
-    max_lenght = 0
-    for pixel_aux in pixel_list:
-        for forest in data[pixel_aux]:
-            count_forests += 1
-            forest_lenght = len(forest.we)
-            if forest_lenght > max_lenght:
-                max_lenght = forest_lenght
-    # The kernels take this as an int argument, which pycuda can only marshal
-    # from a fixed-width type, not a plain Python int.
-    max_lenght = np.int32(max_lenght)
+        # max_lenght is a property of whichever data is actually loaded, not a
+        # static parameter, so it's computed here rather than read from parameters.
+        count_forests = 0
+        max_lenght = 0
+        for pixel_aux in pixel_list:
+            for forest in data[pixel_aux]:
+                count_forests += 1
+                forest_lenght = len(forest.we)
+                if forest_lenght > max_lenght:
+                    max_lenght = forest_lenght
+        # The kernels take this as an int argument, which pycuda can only marshal
+        # from a fixed-width type, not a plain Python int.
+        max_lenght = np.int32(max_lenght)
 
     # Checked before the host arrays are built, not just before the uploads:
     # the forest buffers are the same size on both sides, so on a large
@@ -105,66 +116,76 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
          "lower 'number_of_neighs' in parameters.yml, which scales most buffers",
          "use coarser binning (larger bin_size_r, or smaller rmax)"])
 
-    gran_dc = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_rx = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_ry = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_rz = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_we = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_dw = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_x = np.zeros(count_forests, dtype = params.gpu_dtype)
-    gran_y = np.zeros(count_forests, dtype = params.gpu_dtype)
-    gran_z = np.zeros(count_forests, dtype = params.gpu_dtype)
-    gran_odl2 = np.zeros(count_forests, dtype = params.gpu_dtype)
-    gran_dl = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_omega = np.zeros(count_forests, dtype = params.gpu_dtype)
     weight_B = np.zeros(total_bins, dtype = params.gpu_dtype)
-    count = int(0)
-    for pixel in pixel_list:
-        for forest in data[pixel]:
-            len_forest = len(forest.we)
-            # lambdaforest.
-            gran_dc[count * max_lenght : count * max_lenght + len_forest] = forest.dc
-            gran_rx[count * max_lenght : count * max_lenght + len_forest] = forest.rx
-            gran_ry[count * max_lenght : count * max_lenght + len_forest] = forest.ry
-            gran_rz[count * max_lenght : count * max_lenght + len_forest] = forest.rz
-            gran_we[count * max_lenght : count * max_lenght + len_forest] = forest.we
-            gran_dw[count * max_lenght : count * max_lenght + len_forest] = forest.dw
-            gran_x[count] = forest.x
-            gran_y[count] = forest.y
-            gran_z[count] = forest.z
-            gran_odl2[count] = forest.omega_delta_lambda2
-            gran_omega[count] = forest.omega
-            gran_dl[count * max_lenght : count * max_lenght + len_forest] = forest.delta_lambda
-            forest.index = count
-            count += 1
+    if plan is not None:
+        big, small, data = streaming_upload.stream_forests_to_gpu(
+            plan, ('dc', 'rx', 'ry', 'rz', 'we', 'dw', 'delta_lambda'),
+            ('x', 'y', 'z', 'omega_delta_lambda2', 'omega'), params.gpu_dtype)
+        gran_dc_d, gran_rx_d, gran_ry_d, gran_rz_d = big['dc'], big['rx'], big['ry'], big['rz']
+        gran_we_d, gran_dw_d, gran_dl_d = big['we'], big['dw'], big['delta_lambda']
+        gran_x_d, gran_y_d, gran_z_d = small['x'], small['y'], small['z']
+        gran_odl2_d, gran_omega_d = small['omega_delta_lambda2'], small['omega']
+    else:
+        gran_dc = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+        gran_rx = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+        gran_ry = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+        gran_rz = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+        gran_we = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+        gran_dw = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+        gran_x = np.zeros(count_forests, dtype = params.gpu_dtype)
+        gran_y = np.zeros(count_forests, dtype = params.gpu_dtype)
+        gran_z = np.zeros(count_forests, dtype = params.gpu_dtype)
+        gran_odl2 = np.zeros(count_forests, dtype = params.gpu_dtype)
+        gran_dl = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
+        gran_omega = np.zeros(count_forests, dtype = params.gpu_dtype)
+        count = int(0)
+        for pixel in pixel_list:
+            for forest in data[pixel]:
+                len_forest = len(forest.we)
+                # lambdaforest.
+                gran_dc[count * max_lenght : count * max_lenght + len_forest] = forest.dc
+                gran_rx[count * max_lenght : count * max_lenght + len_forest] = forest.rx
+                gran_ry[count * max_lenght : count * max_lenght + len_forest] = forest.ry
+                gran_rz[count * max_lenght : count * max_lenght + len_forest] = forest.rz
+                gran_we[count * max_lenght : count * max_lenght + len_forest] = forest.we
+                gran_dw[count * max_lenght : count * max_lenght + len_forest] = forest.dw
+                gran_x[count] = forest.x
+                gran_y[count] = forest.y
+                gran_z[count] = forest.z
+                gran_odl2[count] = forest.omega_delta_lambda2
+                gran_omega[count] = forest.omega
+                gran_dl[count * max_lenght : count * max_lenght + len_forest] = forest.delta_lambda
+                forest.index = count
+                forest.num_points = len_forest
+                count += 1
 
-    lenght_data = gran_dw.nbytes
-    lenght_data_small = gran_x.nbytes
-    gran_dc_d = cuda.mem_alloc(lenght_data)
-    gran_rx_d = cuda.mem_alloc(lenght_data)
-    gran_ry_d = cuda.mem_alloc(lenght_data)
-    gran_rz_d = cuda.mem_alloc(lenght_data)
-    gran_we_d = cuda.mem_alloc(lenght_data)
-    gran_dw_d = cuda.mem_alloc(lenght_data)
-    gran_dl_d = cuda.mem_alloc(lenght_data)
-    gran_x_d = cuda.mem_alloc(lenght_data_small)
-    gran_y_d = cuda.mem_alloc(lenght_data_small)
-    gran_z_d = cuda.mem_alloc(lenght_data_small)
-    gran_odl2_d = cuda.mem_alloc(lenght_data_small)
-    gran_omega_d = cuda.mem_alloc(lenght_data_small)
+        lenght_data = gran_dw.nbytes
+        lenght_data_small = gran_x.nbytes
+        gran_dc_d = cuda.mem_alloc(lenght_data)
+        gran_rx_d = cuda.mem_alloc(lenght_data)
+        gran_ry_d = cuda.mem_alloc(lenght_data)
+        gran_rz_d = cuda.mem_alloc(lenght_data)
+        gran_we_d = cuda.mem_alloc(lenght_data)
+        gran_dw_d = cuda.mem_alloc(lenght_data)
+        gran_dl_d = cuda.mem_alloc(lenght_data)
+        gran_x_d = cuda.mem_alloc(lenght_data_small)
+        gran_y_d = cuda.mem_alloc(lenght_data_small)
+        gran_z_d = cuda.mem_alloc(lenght_data_small)
+        gran_odl2_d = cuda.mem_alloc(lenght_data_small)
+        gran_omega_d = cuda.mem_alloc(lenght_data_small)
 
-    cuda.memcpy_htod(gran_dc_d, gran_dc)
-    cuda.memcpy_htod(gran_rx_d, gran_rx)
-    cuda.memcpy_htod(gran_ry_d, gran_ry)
-    cuda.memcpy_htod(gran_rz_d, gran_rz)
-    cuda.memcpy_htod(gran_we_d, gran_we)
-    cuda.memcpy_htod(gran_dw_d, gran_dw)
-    cuda.memcpy_htod(gran_dl_d, gran_dl)
-    cuda.memcpy_htod(gran_x_d, gran_x)
-    cuda.memcpy_htod(gran_y_d, gran_y)
-    cuda.memcpy_htod(gran_z_d, gran_z)
-    cuda.memcpy_htod(gran_odl2_d, gran_odl2)
-    cuda.memcpy_htod(gran_omega_d, gran_omega)
+        cuda.memcpy_htod(gran_dc_d, gran_dc)
+        cuda.memcpy_htod(gran_rx_d, gran_rx)
+        cuda.memcpy_htod(gran_ry_d, gran_ry)
+        cuda.memcpy_htod(gran_rz_d, gran_rz)
+        cuda.memcpy_htod(gran_we_d, gran_we)
+        cuda.memcpy_htod(gran_dw_d, gran_dw)
+        cuda.memcpy_htod(gran_dl_d, gran_dl)
+        cuda.memcpy_htod(gran_x_d, gran_x)
+        cuda.memcpy_htod(gran_y_d, gran_y)
+        cuda.memcpy_htod(gran_z_d, gran_z)
+        cuda.memcpy_htod(gran_odl2_d, gran_odl2)
+        cuda.memcpy_htod(gran_omega_d, gran_omega)
 
     numpix_d = gpuarray.to_gpu(np.array(shape_hist, dtype = np.int32))
     weight_B_d = gpuarray.to_gpu(weight_B)
@@ -228,6 +249,8 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     r12 = cuda.mem_alloc(size_auxiliars_real)
     bin_rt = cuda.mem_alloc(size_auxiliars_int)
     bin_rp = cuda.mem_alloc(size_auxiliars_int)
+
+    return data
 def distortion_per_pixel(forest_list, **kargs):
     """ This function loops over the forests in a pixel and finds its neighbors
     I will use the method by Helion and only setting r1 as the center node
@@ -251,7 +274,7 @@ def distortion_per_pixel(forest_list, **kargs):
         cuda.memset_d8_async(etas32, 0, le2.nbytes)
         cuda.memset_d8_async(etas33, 0, le2.nbytes)
         cuda.memset_d8_async(index_j, 0, le4.nbytes)
-        forest1_lenght = len(forest1.dc)
+        forest1_lenght = forest1.num_points
         # Looking for neighbors
         neighbors_full = forest1.neighborhood(data, angmax)
         number_of_neighs_full = len(neighbors_full)
@@ -260,7 +283,7 @@ def distortion_per_pixel(forest_list, **kargs):
         random.shuffle(neighbors_full) 
         neighbors = neighbors_full[:number_of_neighs]
         neigh_index = np.array([forest2.index for forest2 in neighbors], dtype = np.int32)
-        neigh_sizes = np.array([len(forest2.dc) for forest2 in neighbors], dtype = np.int32)
+        neigh_sizes = np.array([forest2.num_points for forest2 in neighbors], dtype = np.int32)
         base = np.array([forest1.index, forest1_lenght, number_of_neighs], dtype = np.int32)
 
         activeBs.fill(0)
