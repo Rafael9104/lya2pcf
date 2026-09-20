@@ -16,6 +16,12 @@ compute_etas = mod.get_function("compute_etas")
 compute_d = mod.get_function("compute_d")
 order_active = mod.get_function("order_active")
 
+# Forests whose kept neighbours were capped at params.number_of_neighs, and
+# forests seen, over the whole run (reported at the end by distortion.py).
+clamped_forests = 0
+forests_seen = 0
+
+
 def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_list = None):
     """ This function copies all the data from the forests to the GPU to reduce the overhead
     of copying it at every call. Might need to be more selective with larger datasets.
@@ -233,6 +239,7 @@ def distortion_per_pixel(forest_list, **kargs):
     I will use the method by Helion and only setting r1 as the center node
     of the triangle.
     """
+    global clamped_forests, forests_seen
 
     # Preparing data structure for the partial histograms
     dist_hist = np.empty((total_bins, total_bins), dtype = params.gpu_dtype)
@@ -255,7 +262,13 @@ def distortion_per_pixel(forest_list, **kargs):
         # Looking for neighbors
         neighbors_full = forest1.neighborhood(data, angmax)
         number_of_neighs_full = len(neighbors_full)
+        forests_seen += 1
         number_of_neighs = int(np.ceil(number_of_neighs_full*(1.-reject_fraction)))
+        # The scratch buffers are sized for params.number_of_neighs neighbours
+        # per forest; keeping more would make the kernels index past them.
+        if number_of_neighs > params.number_of_neighs:
+            number_of_neighs = params.number_of_neighs
+            clamped_forests += 1
         # Choosing only a percentage of the pairs
         random.shuffle(neighbors_full) 
         neighbors = neighbors_full[:number_of_neighs]
