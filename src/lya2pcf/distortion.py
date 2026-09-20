@@ -39,6 +39,16 @@ def main():
         parser.add_argument('--excluded', default = 0.95, required = False,
                 help = 'Fraction of forests pairs excluded from the computation.')
 
+        parser.add_argument('--chunks', type=int, default = None, required = False,
+                help = 'Number of chunks the pixels are divided into. Each rank processes its chunks one '
+                'after the other, loading only that chunk\'s files and freeing them before the next, '
+                'so with one rank (one GPU) the chunks run sequentially and the memory needed is one '
+                'chunk\'s, not the whole dataset\'s. Default: one chunk per MPI rank.')
+
+        parser.add_argument('--only-chunk', type=int, default = None, required = False,
+                help = 'Process just this one chunk (0 to chunks-1) and exit. Useful to test whether the '
+                'largest chunk fits on the GPU, or to debug a single chunk.')
+
         parser.add_argument('--verbose', action = 'store_true', required = False,
                 help = 'Show statistics of computation time. Only computes the distortion matrix for a few forests.')
 
@@ -61,7 +71,12 @@ def main():
     ####################################################################
 
     index = pixel_partition.load_index(params.data_dir)
-    owned_pixels = pixel_partition.assign_pixels(index['pixel_file'], mpi_size, mpi_rank)
+    num_chunks = args.chunks if args.chunks is not None else mpi_size
+    if num_chunks < 1:
+        raise ValueError('--chunks must be at least 1, got %d' % num_chunks)
+    my_chunks = pixel_partition.rank_chunks(num_chunks, mpi_rank, mpi_size)
+    if args.only_chunk is not None:
+        my_chunks = [c for c in my_chunks if c == args.only_chunk]
     angmax = 2*np.arcsin(0.5*params.rtmax/index['min_distance'])
     shape_hist = (params.numpix_rp, params.numpix_rt)
     total_bins = np.prod(shape_hist)
@@ -69,10 +84,20 @@ def main():
     weight_A = np.zeros(total_bins)
 
     print('Maximum angle between pairs of skewers that are used (rad):', angmax)
-    print('Rank', mpi_rank, 'owns', len(owned_pixels), 'pixels.')
-    log_file.write('\nThis rank owns ' + str(len(owned_pixels)) + ' pixels.')
+    print('Rank', mpi_rank, 'processes chunks', list(my_chunks), 'of', num_chunks)
+    log_file.write('\nThis rank processes chunks ' + str(list(my_chunks)) + ' of ' + str(num_chunks) + '.')
 
-    if len(owned_pixels) > 0:
+    # disto and weight_A keep accumulating across chunks, so the result is the
+    # same however the pixels are grouped.
+    finished = False
+    for chunk in my_chunks:
+
+        owned_pixels = pixel_partition.assign_pixels(index['pixel_file'], num_chunks, chunk)
+        log_file.write('\nChunk ' + str(chunk) + ' owns ' + str(len(owned_pixels)) + ' pixels.')
+        if len(owned_pixels) == 0:
+            log_file.write('\nNo pixels in this chunk; skipping.')
+            continue
+
         buffer_pixels = pixel_partition.find_buffer_pixels(owned_pixels, angmax, set(index['pixel_file']))
         log_file.write('\nLoaded a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
         data = pixel_partition.load_rank_data(params.data_dir, owned_pixels, buffer_pixels, index['pixel_file'])
@@ -83,14 +108,14 @@ def main():
         # This is the core of the program, where the distortion matrix is computed    #
         ###############################################################################
         num_pixels_partial = len(owned_pixels)
-        log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
+        log_file.write('\nThis chunk computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
             str(owned_pixels[0]) + ' to ' + str(owned_pixels[-1]))
         log_file.flush()
 
         pixel_counter = 0
         for pixel in owned_pixels:
 
-            log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
+            log_file.write('\nChunk ' + str(chunk) + ': computing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
             log_file.flush()
 
             disto_pix, weight_pix = distortion.distortion_per_pixel(data[pixel], **kwargs)
@@ -100,11 +125,22 @@ def main():
             pixel_counter += 1
             if args.verbose and pixel_counter > 1:
                 print('Exiting early due to --verbose option.')
+                finished = True
                 break
-    else:
-        log_file.write('\nNo pixels assigned to this rank; nothing to do.')
-        print('Rank', mpi_rank, 'has no pixels to compute.')
 
+        # Free this chunk's device and host memory before loading the next one.
+        distortion.release()
+        del data
+        if finished:
+            break
+
+    if distortion.forests_seen > 0:
+        clamp_message = ('%d of %d forests (%.2f%%) had more neighbours than number_of_neighs=%d after the '
+            'exclusion and were capped.' % (distortion.clamped_forests, distortion.forests_seen,
+            100.*distortion.clamped_forests/distortion.forests_seen, params.number_of_neighs))
+        print('Rank', mpi_rank, clamp_message)
+        log_file.write('\n' + clamp_message)
+        log_file.flush()
     print('Finished distortion computation.')
     if mpi_size > 1:
         distortion_total = comm.reduce(disto)

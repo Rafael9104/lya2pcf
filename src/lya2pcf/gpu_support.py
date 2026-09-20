@@ -123,3 +123,26 @@ def require_memory(required, what, hints):
     free, _ = cuda.mem_get_info()
     if required > free:
         raise MemoryError(memory_message(required, what, hints))
+
+
+def free_module_buffers(module_globals):
+    """Free every device buffer held in a module's globals and drop the names.
+
+    The pycuda modules keep their device buffers in module-level globals
+    (see init()). Calling init() again for the next chunk of pixels would
+    allocate the new buffers while the old ones are still alive, so the
+    peak would be two chunks' worth of memory -- and require_memory()
+    would refuse the second chunk. Freeing explicitly first keeps the
+    peak at one chunk.
+    """
+    import pycuda.gpuarray as gpuarray
+    freed = set()
+    for name, value in list(module_globals.items()):
+        if isinstance(value, gpuarray.GPUArray):
+            value = value.gpudata
+        if isinstance(value, cuda.DeviceAllocation):
+            # The same allocation can sit behind several names
+            if id(value) not in freed:
+                freed.add(id(value))
+                value.free()
+            module_globals[name] = None

@@ -58,6 +58,19 @@ def assign_pixels(pixel_file, mpi_size, mpi_rank):
     return np.array_split(all_pixels, mpi_size)[mpi_rank]
 
 
+def rank_chunks(num_chunks, mpi_rank, mpi_size):
+    """The chunk numbers this rank processes, one after the other.
+
+    Chunk c is the c-th of num_chunks contiguous slices of the sorted pixel
+    list (assign_pixels(pixel_file, num_chunks, c)). Rank r takes chunks
+    r, r + mpi_size, r + 2*mpi_size, ... so any combination works:
+    num_chunks == mpi_size is the original one-slice-per-rank behaviour,
+    mpi_size == 1 runs every chunk sequentially in one process (one GPU),
+    and anything in between shares the chunks out round-robin.
+    """
+    return range(mpi_rank, num_chunks, mpi_size)
+
+
 def find_buffer_pixels(owned_pixels, angmax, known_pixels):
     """Healpix pixels within angmax of any owned pixel, excluding the
     owned pixels themselves and any pixel with no data at all.

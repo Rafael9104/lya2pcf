@@ -199,6 +199,14 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     max_lenght = buffers.max_lenght
 
 
+def release():
+    """Free this module's device buffers so init() can be called again
+    for another chunk of pixels. See gpu_support.free_module_buffers."""
+    global data
+    gpu_support.free_module_buffers(globals())
+    data = None
+
+
 def two_point_per_pixel(pixel, **kargs):
     """ This function computes the weighted sum of w and delta*w for all pairs of data
     and stores them in histograms to prepare for the correlation function. The

@@ -17,6 +17,11 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux):
     angmax = angmax_aux
 
 
+def release():
+    """Nothing to free on the CPU; here so drivers can call it either way."""
+    pass
+
+
 def two_point_per_pixel(pixel, **kargs):
     """ This function computes the weighted sum of w and delta*w for all pairs of data
     and stores them in histograms to prepare for the correlation function. The
