@@ -8,7 +8,8 @@ wherever you like.
 
 Every other item on this list is done. Remaining:
 
-- **#4** — In-memory pipeline (skip `data.npy` round-trip)
+- **#4** — In-memory pipeline (skip `data.npy` round-trip) — **now the
+  best next target for wall time, see the 2026-09-18 measurements in the item**
 - **#6** — Single host-memory copy shared across multiple GPUs (one node)
 - **#11** — Add a rebinning (coadding) procedure to lya2pcf
 - **#13** — Forests are padded to `max_lenght`, wasting a large share of
@@ -20,6 +21,8 @@ Every other item on this list is done. Remaining:
 - **#17** — Multi-GPU runs split "how many GPUs" across two unrelated
   places
 - **#18** — mpi4py is a hard dependency even for a single process
+- **#19** — Full DR1 correlation measured: 12.0 h on a GTX 970, 66%
+  compute (GPU-bound) and 34% file loading (measured 2026-09-19)
 
 ## 1. `src/lya2pcf/` layout + pip-installable package
 
@@ -345,6 +348,55 @@ is exactly the shape a library API should have; also depends on item 2
 for the `max_lenght` handling mentioned above (currently threaded through
 `parameters.py`, needs to become an explicit return value/argument when
 extraction and correlation share a process).
+
+### Measured on the full DESI DR1 set (2026-09-18) — why this is next
+
+Data: 1028 delta files (5.5 GB gz) → 428,403 forests, longest 967 pixels,
+extracted into 60 `data*.npy` files (14 GB, ~236 MB each). GTX 970,
+float32, `/programs` disk (~51 MB/s sequential write, measured with `dd`).
+
+- **Extraction (`lya2pcf-extract --split-number 60`): 7 min 40 s**, from
+  file timestamps. Pass 1 (positions of all 1028 files) ~85 s, pass 2
+  (60 chunks) ~375 s, ~6.4 s per 236 MB chunk. At 51 MB/s the 14 GB of
+  writes alone take ~280 s, so **writing the pickled files is roughly
+  three quarters of pass 2**. The extraction itself is cheap.
+- **Correlation, one random chunk (chunk 1 of 60, 61 pixels, 37 of the 60
+  files needed): 103 s**, of which `load` (read + unpickle the
+  `data*.npy` files) 39.7 s = 40%, `compute` (neighbour search + kernels)
+  59.5 s = 60%, GPU upload 0.3 s, saving the histograms ~0.
+  Read speed ~1.07 s per file. (The disk cache may have helped a little,
+  and part of that per-file time is single-threaded unpickling, not disk.)
+- **Extrapolated full correlation: ~3 h (WRONG, see #19: the real run took 12.0 h)**, about 2.1 h compute + 1.0 h
+  load. Chunk 1 is one of the smallest (3,292 owned forests against a
+  median 6,930, max 11,947), so the compute figure (18 ms per owned
+  forest) is rough.
+- **The load share is bigger than it needs to be because of the pixel
+  order.** Each chunk reads 34–60 of the 60 files (3,397 file loads in
+  total for 60 chunks, ~780 GB) since RING-ordered healpix indices are
+  not spatially local (see #15). Making the chunks spatially compact
+  (e.g. NEST order, matching how the extraction groups files) would cut
+  reads, but skipping the disk round-trip removes the writes *and* the
+  reads.
+
+So ditching `data*.npy` would remove about a third of the correlation
+time and most of the extraction time. It does **not** touch the compute
+share, which needs fewer/coarser bins or a faster GPU.
+
+### Sequential chunks on one GPU (branch `feat/sequential-chunks`, not merged)
+
+`lya2pcf-correlate` and `lya2pcf-distort` take `--chunks N`: each rank
+processes chunks `rank, rank+size, ...` one after the other, loading
+only that chunk's files and freeing GPU memory (`release()`) in between.
+With one rank the chunks run sequentially on one GPU. `--only-chunk C`
+runs a single chunk, and `two_point.py` logs the time per phase
+(load / upload / compute / save). Verified on the small set: identical
+to the single-chunk run within float32 noise (6e-6 histograms, 1.6e-6
+distortion), also with `mpirun -np 2 --chunks 4` for the correlation.
+Left out of `main` on purpose for now. Known gaps: no resume (a crash
+loses the run; the per-pixel histograms are on disk, so a "skip pixels
+already saved" check would be small), and the 60-chunk worst case needs
+2.61 GB of forest buffers, so `--chunks` must be chosen from the data
+(20 chunks would not fit a 4 GB card).
 
 **Caveat:** this only applies to the single-process (`--cpu` /
 single-GPU, no MPI split across files) path. `2pla.py`'s multi-rank
@@ -839,6 +891,30 @@ float64 compiles, or accepting float32 for the comparison (bearing in
 mind the non-determinism noted in #7, so compare within ~1e-7 rather
 than for equality).
 
+**Does this make the distortion fit a small GPU? No (checked 2026-09-18
+on DR1, 428k forests, longest 967, 2500 bins, `number_of_neighs=80`,
+float32).** The CSR layout only shrinks the per-forest data buffers (about
+1 GB for a 120-chunk run, ~39% of it padding). The distortion's fixed
+scratch buffers are what does not fit: 4.6 GB, made of `etas*`
+(`bins x max_lenght x neighs`, 3.1 GB) and `x12/y12/z12/r12/bin_rp/bin_rt`
+(`max_lenght^2 x neighs`, 1.5 GB). They are working space for one first
+forest and its neighbours, sized by the *longest* forest, so per-forest
+offsets do not shrink them. What would (fixed scratch, neighs=80 / 40):
+
+| longest forest kept | neighs=80 | neighs=40 |
+|---|---|---|
+| 967 (current) | 4.56 GB | 2.28 GB |
+| 940 (p99) | 4.38 GB | 2.19 GB |
+| 829 (p90) | 3.70 GB | 1.85 GB |
+| 660 (≈median) | 2.75 GB | 1.37 GB |
+
+(Forest lengths in three sampled files, 21,424 forests: mean 581, median
+643, p90 829, p99 940, max 966.) Capping length barely helps and throws
+away data; the real levers are `number_of_neighs` (linear; but see #16,
+and it must stay above the ~50 neighbours kept at `--excluded 0.95`),
+coarser bins (`etas*` is linear in bins), or tiling the neighbour loop so
+scratch is sized by a tile, not the worst case.
+
 **Worth prioritising if the plan is to process tens of GB**, where a
 39% saving is the difference between fitting on a given card and not.
 
@@ -1232,6 +1308,19 @@ buffers sized from the config value — already flagged as a silent
 out-of-bounds write in #9c, with mitigation options (assert, debug-mode
 bounds checking, `compute-sanitizer`) listed in #12.
 
+**Partial fix (the neighbour cap):** `distortion_per_pixel` now never keeps
+more than `number_of_neighs` neighbours for a forest, so the kernels
+cannot index past the buffers, and `distortion.py` reports at the end how
+many forests were capped. This turns silent corruption into a (usually
+tiny) statistical change and a visible count, but it does not derive
+`number_of_neighs` from the data. Measured on the full DR1 set (428,403
+forests, `angmax` 3.24 deg): a forest has up to 1,726 neighbours (p99
+1,113, mean 687), so at `--excluded 0.95` it keeps up to 87 (p99.9 64,
+mean 34): **the default `number_of_neighs=80` is exceeded by the densest
+forests**; `0.98` keeps at most 35, `0.985` 26, `0.99` 18. The full-set
+run at `--excluded 0.98`, `number_of_neighs=35` capped 0 of 428,403
+forests.
+
 This item is the fix `#9c`/`#12` point at but don't commit to: **don't
 make `number_of_neighs` a better-documented config guess, stop it being
 config at all.** Compute the actual maximum neighbour count from the
@@ -1423,3 +1512,60 @@ one process.
    lifetime/cleanup, race conditions between ranks). Do it last, on a
    stable base, and test carefully on a real multi-GPU node before
    trusting results from it.
+
+## 19. Full-DR1 correlation: 12.0 h, 66% compute (GPU-bound) + 34% file loading
+
+Measured 2026-09-19 on the full DESI DR1 set (428,403 forests, 60
+chunks, GTX 970, float32, `--chunks 60`, started 2026-09-19 00:05).
+
+- **The earlier ~3 h estimate was 3.5x too low.** It was extrapolated
+  from one small chunk at the sky edge (chunk 1: 3,292 owned forests,
+  ~18 ms per owned forest). At 07:28 the real run was on chunk 40 of 60
+  with 2,501 of 3,646 pixels done after 7 h 22 min (~340 pixels/h,
+  ~11 min per chunk), i.e. **~10.8 h in total**. Mid-sky chunks are
+  larger (median 6,930 owned forests, max 11,947) and denser, and the
+  cost per pixel grows with the number of neighbours.
+- **It is GPU-bound during compute.** `nvidia-smi` sampled every second
+  for 40 s during a compute phase: 94–98% utilisation. (A single earlier
+  sample read 3%, which was a chunk's file loading.)
+- **`forest.neighborhood()` is not the bottleneck.** Timed on the CPU
+  over 300 forests: ~0.57 us per candidate forest, ~2,851 candidates per
+  forest on average over the full set, so ~2 ms per forest, **~0.2 h of
+  ~10.8 h (about 2%)**. (An earlier guess that it was the bottleneck was
+  wrong. A scipy `cKDTree` could still do the neighbour counting for all
+  forests in about a minute, but there is little to gain.)
+- **Result of the full run: 43,278 s = 12.0 h**, exit 0, 3,646 pixels.
+  `Time by phase`: load 14,544 s (34%), upload 111 s, compute 28,591 s
+  (66%), save 19 s. The sum of the phases (43,265 s) matches the wall
+  time, so nothing large is unaccounted for.
+- **File loading is a third of the run, three times my earlier
+  estimate.** 14,544 s over the 3,397 file loads the plan needs is
+  4.28 s per file, not the 1.07 s measured on one small chunk (chunk 1);
+  bigger chunks read more files and the disk (~51 MB/s) is slow. (A
+  first version of this note said "a tenth of the run": wrong.) So
+  **ditching `data.npy` (#4) removes ~4 h of the 12 h correlation**, plus
+  the ~7 min extraction, and does not touch the GPU time. Spatially
+  compact chunks (NEST order, #15) would also cut the loads, but skipping
+  the round-trip removes them entirely.
+- **Compute is 66%: ~7.9 h.** Of that, the neighbour search is ~0.2 h
+  (measured above), so the GPU kernels and launch overhead are ~7.7 h.
+
+**What to try, in the order I would look at it** (none of these is
+measured yet; the first step is a profile with `nvprof`/`nsys`, or
+`--verbose` timing per kernel, on one dense chunk):
+
+- **Atomic contention on the histograms.** `pair_correlation` accumulates
+  every pixel pair into 2500 bins with `atomicAdd`; many threads hit the
+  same few bins. Per-block shared-memory histograms merged at the end is
+  the standard fix, and is the most likely large win. (On float64 this is
+  worse: pre-Pascal cards cannot do it at all, see #7.)
+- **One kernel launch and three small `to_gpu` copies per first forest**
+  (`two_point_per_pixel`), with `context.synchronize()` after each. For
+  small forests the launch overhead and the sync gaps can dominate;
+  batching several first forests per launch would amortise it.
+- **Coarser or fewer bins** cut the work directly (bins scale the
+  histogram, not the pair count, so this mostly helps the distortion),
+  and a **faster GPU** helps everything: the GTX 970 is a 2014 card.
+- **Padding (#13)** matters less here than in the distortion, because the
+  correlation kernel already takes each neighbour's real length.
+
