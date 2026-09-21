@@ -82,15 +82,20 @@ def main():
         return
 
     buffer_pixels = pixel_partition.find_buffer_pixels(owned_pixels, angmax, set(index['pixel_file']))
-    log_file.write('\nLoaded a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
-    data = pixel_partition.load_rank_data(params.data_dir, owned_pixels, buffer_pixels, index['pixel_file'])
+    log_file.write('\nFound a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
 
-    # Moving data dict to the correlation_procedures module
+    # The CPU path needs every forest's arrays in memory, so it loads them all. The GPU path
+    # streams them to the GPU one data file at a time (streaming_upload.py) and keeps only
+    # the light per-forest metadata in host memory.
     if args.cpu:
         from . import correlation_procedures_cpu as correlations
+        data = pixel_partition.load_rank_data(params.data_dir, owned_pixels, buffer_pixels, index['pixel_file'])
+        correlations.init(data, log_file, shape_hist, angmax)
     else:
         from . import correlation_procedures_pycuda as correlations
-    correlations.init(data, log_file, shape_hist, angmax)
+        plan = pixel_partition.plan_rank_data(params.data_dir, index, owned_pixels, buffer_pixels)
+        log_file.write('\nStreaming ' + str(plan.count_forests) + ' forests from ' + str(len(plan.files)) + ' data files to the GPU.')
+        correlations.init(plan, log_file, shape_hist, angmax)
 
     num_pixels_partial = len(owned_pixels)
     log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
