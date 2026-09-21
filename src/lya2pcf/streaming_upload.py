@@ -50,10 +50,12 @@ def stream_forests_to_gpu(plan, big_fields, small_fields, dtype):
 
     big = {}
     for name in big_fields:
+        # Not zeroed: every slot is overwritten below. plan_rank_data gives the
+        # pixels consecutive, non-overlapping slot ranges that cover the whole
+        # buffer, each pixel's block is written in full (its padding is already
+        # zero in the block), and iter_plan_files raises if a pixel does not have
+        # the number of forests the plan counted.
         big[name] = cuda.mem_alloc(count * slot_bytes)
-        # Every slot gets written below, padding included, but a slot of
-        # padding-only zeros must not depend on that.
-        cuda.memset_d8(big[name], 0, count * slot_bytes)
     small_host = {name: np.zeros(count, dtype=dtype) for name in small_fields}
 
     data = {}
