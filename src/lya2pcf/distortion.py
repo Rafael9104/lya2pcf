@@ -39,6 +39,11 @@ def main():
         parser.add_argument('--excluded', default = 0.95, required = False,
                 help = 'Fraction of forests pairs excluded from the computation.')
 
+        parser.add_argument('--partition-order', choices=['nest', 'ring'], default='nest', required=False,
+                help='How the healpix pixels are ordered before being cut into one contiguous slice per MPI rank. '
+                'nest gives compact regions, so a rank needs a smaller buffer of neighbouring pixels (much less GPU '
+                'memory from 4 slices up on DR1); ring gives horizontal bands, which is better for only 2 slices.')
+
         parser.add_argument('--verbose', action = 'store_true', required = False,
                 help = 'Show statistics of computation time. Only computes the distortion matrix for a few forests.')
 
@@ -61,7 +66,7 @@ def main():
     ####################################################################
 
     index = pixel_partition.load_index(params.data_dir)
-    owned_pixels = pixel_partition.assign_pixels(index['pixel_file'], mpi_size, mpi_rank)
+    owned_pixels = pixel_partition.assign_pixels(index['pixel_file'], mpi_size, mpi_rank, order=args.partition_order)
     angmax = 2*np.arcsin(0.5*params.rtmax/index['min_distance'])
     shape_hist = (params.numpix_rp, params.numpix_rt)
     total_bins = np.prod(shape_hist)

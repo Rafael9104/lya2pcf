@@ -1218,6 +1218,46 @@ production case) that switching to NESTED ordering would fix -- a
 bigger, separate change (touches every `pix = healpy.ang2pix(...)` call
 site and anything that assumes RING) that is not part of this item.
 
+**Done in part (2026-09-20): a NEST-ordered partition, without touching the
+stored pixel indices.** Nothing above needed the `ang2pix` call sites to
+change: `pixel_partition.assign_pixels` now orders the pixels by
+`healpy.ring2nest` before cutting them into one contiguous slice per rank
+(`--partition-order nest`, the default; `ring` restores the old behaviour),
+and the stored indices stay RING. Measured on the full DR1 set (428,403
+forests), the forests a GPU holds for the worst slice (its own plus the
+neighbour buffer):
+
+| slices | RING (old) | NEST | change |
+|---|---|---|---|
+| 2 | 286,854 = 248,877 + 37,977 | 309,527 = 238,866 + 70,661 | +8% (worse) |
+| 4 | 243,389 = 135,562 + 107,827 | 188,087 = 121,998 + 66,089 | -23% |
+| 8 | 197,941 = 77,689 + 120,252 | 116,952 = 67,598 + 49,354 | -41% |
+| 16 | 174,912 = 40,532 + 134,380 | 68,053 = 23,799 + 44,254 | -61% |
+
+NEST is only worse for 2 slices: a single latitude cut has almost no
+boundary, whereas NEST's compact regions have some, so use
+`--partition-order ring` there. The number of data files a slice touches did
+**not** improve (still 57-60 of 60), because the extraction groups files by
+shared delta-file pixels and not by NEST order: fixing that would mean
+grouping the extraction the same way.
+
+*Correlation:* every pixel is still processed by exactly one rank and its
+histogram does not depend on which other pixels share the rank, so the
+result does not change (small set, 2 ranks: 9.7e-6 NEST and 6.0e-6 RING
+against the previous results, float32 noise).
+
+*Distortion: the result does depend on the order.* `distortion_per_pixel`
+keeps a random `1 - excluded` share of each forest's neighbours, drawing from
+one module-level `random.seed(1)` stream in the order the pixels are
+processed, so a different pixel order (NEST instead of RING) or a different
+number of ranks is a different random subsample. Small set, 1 rank: with
+`--partition-order ring` the distortion reproduces the previous one to 1.7e-6;
+with NEST the largest element differs by 4% but the mean by 0.09%, i.e.
+subsampling noise, not an error. (This was already true when changing the
+number of ranks.) Seeding the shuffle per forest (e.g. `random.Random(forest.name)`)
+would make the distortion independent of the partition; not done here because
+it changes the numbers of every existing run.
+
 ## 16. `number_of_neighs` should be derived from the data, not a config guess
 
 Tracked as GitHub issue #1 ("number_of_neighs causes an error"), open

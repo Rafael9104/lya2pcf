@@ -45,17 +45,31 @@ def load_index(data_dir):
             % path) from None
 
 
-def assign_pixels(pixel_file, mpi_size, mpi_rank):
-    """This rank's share of the sorted global pixel list.
+def assign_pixels(pixel_file, mpi_size, mpi_rank, order='nest'):
+    """This rank's share of the global pixel list, as a contiguous slice of
+    the pixels sorted by healpix NEST index (order='nest', the default) or
+    by RING index (order='ring', the previous behaviour).
 
-    Same contiguous-chunk convention delta_reader.py uses to split pixels
-    into files (np.array_split on the sorted pixel list), so a rank's
-    assigned pixels usually fall in only a few files, not the whole
-    dataset -- though see IMPROVEMENTS.md #15 for why that is not
-    guaranteed (RING-ordered healpix indices are not spatially local).
+    The pixel indices lya2pcf stores are RING. A contiguous slice of RING
+    indices is a horizontal band of the sky, long and thin, so the buffer
+    of neighbouring pixels a rank also needs around it (find_buffer_pixels)
+    is large compared with the slice itself. NEST indices are locally
+    compact: a contiguous slice is a set of adjacent square-ish regions,
+    with much less boundary. On DR1 (428,403 forests) the forests a GPU has
+    to hold (its own plus the buffer) for the worst slice drop from 243,389
+    to 188,087 for 4 slices, 197,941 to 116,952 for 8 and 174,912 to 68,053
+    for 16 -- see IMPROVEMENTS.md #15/#20.
+
+    Which pixels a rank owns does not change any result: each pixel is
+    still processed by exactly one rank, and its histogram depends only on
+    the pixel, not on which other pixels share its rank.
     """
-    all_pixels = np.array(sorted(pixel_file))
-    return np.array_split(all_pixels, mpi_size)[mpi_rank]
+    pixels = np.array(sorted(pixel_file))
+    if order == 'nest':
+        pixels = pixels[np.argsort(healpy.ring2nest(params.nside, pixels), kind='stable')]
+    elif order != 'ring':
+        raise ValueError("order must be 'nest' or 'ring', got %r" % (order,))
+    return np.array_split(pixels, mpi_size)[mpi_rank]
 
 
 def find_buffer_pixels(owned_pixels, angmax, known_pixels):
