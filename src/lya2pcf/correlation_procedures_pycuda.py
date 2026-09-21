@@ -154,14 +154,9 @@ def two_point_per_pixel(pixel, **kargs):
             Shape of the histogram in bits
     """
     # Preparing data structure for the partial histograms
-    w_hist = np.zeros(shape_hist, dtype = myfloat)
-    dw_hist = np.zeros(shape_hist, dtype = myfloat)
+    w_hist_d = gpuarray.zeros(shape_hist, dtype = myfloat)
+    dw_hist_d = gpuarray.zeros(shape_hist, dtype = myfloat)
     numpix2d_d = gpuarray.to_gpu(np.array(shape_hist, dtype = np.int32))
-
-    w_hist_d = cuda.mem_alloc(w_hist.nbytes)
-    dw_hist_d = cuda.mem_alloc(w_hist.nbytes)
-    cuda.memcpy_htod(w_hist_d, w_hist)
-    cuda.memcpy_htod(dw_hist_d, dw_hist)
 
     # Passing data to the GPU
     rmax_d = gpuarray.to_gpu(np.array([params.rpmax,params.rtmax],dtype=myfloat))
@@ -200,9 +195,6 @@ def two_point_per_pixel(pixel, **kargs):
         # This is necessary to avoid to overwrite x12, y12, z12, bin_r12 with the next forest
         pycuda.autoinit.context.synchronize()
 
-    cuda.memcpy_dtoh(w_hist, w_hist_d)
-    cuda.memcpy_dtoh(dw_hist, dw_hist_d)
-
-    return (w_hist, dw_hist)
+    return (w_hist_d.get(), dw_hist_d.get())
 
 
