@@ -105,7 +105,7 @@ def main():
         log_file.write('\nNo pixels assigned to this rank; nothing to do.')
         print('Rank', mpi_rank, 'has no pixels to compute.')
 
-    if distortion.forests_seen > 0:
+    if distortion.clamped_forests > 0:
         clamp_message = ('%d of %d forests (%.2f%%) had more neighbours than number_of_neighs=%d after the '
             'exclusion and were capped.' % (distortion.clamped_forests, distortion.forests_seen,
             100.*distortion.clamped_forests/distortion.forests_seen, params.number_of_neighs))
