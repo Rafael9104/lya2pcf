@@ -2,12 +2,11 @@
     Copies a rank's forests to the GPU one pixel at a time, without ever
     holding all of them in host memory.
 
-    The plain path (correlation_procedures_pycuda.upload_forests and
-    distortion_procedures_pycuda.init on a loaded `data` dict) first loads
-    every forest of the rank (owned pixels plus neighbour buffer), then packs
-    them into flat host arrays as large as the GPU buffers, then uploads. On
-    a full DR1 slice that peaks at ~14-15 GB of host RAM per rank (measured:
-    ~55-58 KB per forest), which does not fit when several ranks share a node.
+    The GPU upload used to load every forest of the rank (owned pixels plus
+    neighbour buffer), pack them into flat host arrays as large as the GPU
+    buffers, and only then upload. On a full DR1 slice that peaked at ~14-15 GB
+    of host RAM per rank (measured: ~55-58 KB per forest), which does not fit
+    when several ranks share a node.
 
     Here the layout is planned first (pixel_partition.plan_rank_data): every
     forest's GPU slot and max_lenght are known from the index alone. The GPU

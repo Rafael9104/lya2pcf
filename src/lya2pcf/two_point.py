@@ -95,7 +95,7 @@ def main():
         from . import correlation_procedures_pycuda as correlations
         plan = pixel_partition.plan_rank_data(params.data_dir, index, owned_pixels, buffer_pixels)
         log_file.write('\nStreaming ' + str(plan.count_forests) + ' forests from ' + str(len(plan.files)) + ' data files to the GPU.')
-        correlations.init(None, log_file, shape_hist, angmax, plan = plan)
+        correlations.init(plan, log_file, shape_hist, angmax)
 
     num_pixels_partial = len(owned_pixels)
     log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
