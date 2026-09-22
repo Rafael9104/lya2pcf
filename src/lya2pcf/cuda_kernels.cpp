@@ -280,9 +280,23 @@ __global__ void order_active(
 __global__ void compute_d(int max_lenght, int *numpix, int *base, int *neigh_index, int *neigh_sizes,
     myfloat *we, myfloat *delta_lambda,
     int *bin_rp, int *bin_rt,
-    int *ActiveBs_index,
+    int *ActiveBs_index, int *index_j,
     myfloat *eta12, myfloat *eta21, myfloat *eta22, myfloat *eta13, myfloat *eta31, myfloat *eta23, myfloat *eta32, myfloat *eta33,
     myfloat *d_hist) {
+    /* Every (i, j) thread that shares a neighbour f2 needs the same short
+       list of that neighbour's active bins -- order_active's output,
+       ActiveBs_index[f2*tot_pix : f2*tot_pix + index_j[f2]]. The original
+       version had every thread read that list from global memory on its
+       own, an independent serially-dependent chain repeated up to
+       blockDim.x * blockDim.y times per f2 (measured: 141M atomic
+       transactions and 77% memory-dependency stalls on one launch, see
+       IMPROVEMENTS.md #22). Caching it once per block in shared memory,
+       read by every thread from there instead, removes that redundant
+       traffic. Sized for the worst case (every bin active) since the real
+       count (index_j[f2]) is only known once the kernel runs; see
+       distortion_procedures_pycuda.py's shared-memory size check. */
+    extern __shared__ int sh_active[];
+
     const int i = blockDim.x*blockIdx.x + threadIdx.x;
     const int j = blockDim.y*blockIdx.y + threadIdx.y;
     const int f2 = blockDim.z*blockIdx.z + threadIdx.z;
@@ -290,19 +304,35 @@ __global__ void compute_d(int max_lenght, int *numpix, int *base, int *neigh_ind
     const int indice1 = base[0];
     const int size1 = base[1];
     const int number_of_neighs = base[2];
+    const int numpix_rt = numpix[1];
+    const int numpix_rp = numpix[0];
+    const int tot_pix = numpix_rp*numpix_rt;
 
     int k;
     int small_index;
     int B;
+
+    // Cooperative load: this block covers up to blockDim.z distinct f2's
+    // (one per threadIdx.z), each copied into its own tot_pix-wide slice
+    // of shared memory by the blockDim.x*blockDim.y threads that share
+    // it -- regardless of whether those threads' own (i, j) turns out
+    // in-bounds below, since the destination only depends on threadIdx.z.
+    int *my_active = sh_active + threadIdx.z * tot_pix;
+    if (f2 < number_of_neighs) {
+        const int active_count = index_j[f2];
+        const int tid_xy = threadIdx.x + threadIdx.y * blockDim.x;
+        const int nthreads_xy = blockDim.x * blockDim.y;
+        for (int k2 = tid_xy; k2 < active_count && k2 < tot_pix; k2 += nthreads_xy) {
+            my_active[k2] = ActiveBs_index[f2*tot_pix + k2];
+        }
+    }
+    __syncthreads();
 
     if (i < size1 &&  f2 < number_of_neighs){
         const int indice2 = neigh_index[f2];
         const int size2 = neigh_sizes[f2];
         if (j < size2){
             const int indice12 = (i * number_of_neighs + f2) * max_lenght + j;
-            const int numpix_rt = numpix[1];
-            const int numpix_rp = numpix[0];
-            const int tot_pix = numpix_rp*numpix_rt;
             const int A = bin_rp[indice12] * numpix_rt + bin_rt[indice12];
             const int indice1i = indice1 * max_lenght + i;
             const int indice2j = indice2 * max_lenght + j;
@@ -310,10 +340,9 @@ __global__ void compute_d(int max_lenght, int *numpix, int *base, int *neigh_ind
 
             if (bin_rt[indice12] < numpix_rt && bin_rp[indice12] < numpix_rp){
                 atomicAdd(&d_hist[A*(1+tot_pix)], w12);
-                k = 0;
-                while(ActiveBs_index[f2*tot_pix + k] > -1 && k < tot_pix){
-            // printf("voyy en i = %d,f2= %d, k = %d \n", i, f2,k);
-                    B =  ActiveBs_index[f2*tot_pix + k];
+                const int active_count = index_j[f2];
+                for (k = 0; k < active_count && k < tot_pix; k++){
+                    B = my_active[k];
                     small_index = f2*tot_pix + B;
                     atomicAdd(&d_hist[A*tot_pix + B], w12*(
                             delta_lambda[indice1i]*delta_lambda[indice2j]*eta33[small_index]
@@ -325,7 +354,6 @@ __global__ void compute_d(int max_lenght, int *numpix, int *base, int *neigh_ind
                             - eta21[small_index*max_lenght + j]
                             - eta12[small_index*max_lenght + i]
                             ));
-                    k++;
                 }
             }
         }

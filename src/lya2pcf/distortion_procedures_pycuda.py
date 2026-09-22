@@ -135,6 +135,28 @@ def init(plan, log_file_aux, shape_hist_aux, angmax_aux, reject_aux):
     global dist_hist_d
     global binner_d
 
+    global compute_d_shared_bytes
+
+    # compute_d's per-block cache of order_active's output (see the kernel's
+    # own comment and IMPROVEMENTS.md #22): one tot_pix-wide int32 slice per
+    # distinct neighbour (blockDim.z) the block covers, sized for the worst
+    # case since the real per-neighbour count is only known at kernel
+    # runtime. Checked once here, at the same size for every launch, for the
+    # same reason as pair_correlation's shared-memory check in
+    # correlation_procedures_pycuda.py.
+    compute_d_shared_bytes = (
+        params.distortion_threads_per_block[2] * int(total_bins) * np.dtype(np.int32).itemsize)
+    max_shared = cuda.Context.get_device().get_attribute(
+        cuda.device_attribute.MAX_SHARED_MEMORY_PER_BLOCK)
+    if compute_d_shared_bytes > max_shared:
+        raise RuntimeError(
+            "compute_d's per-block active-bin cache needs %d bytes of shared "
+            "memory (distortion_threads_per_block[2]=%d * %d bins * %d bytes), "
+            "but this GPU only has %d bytes per block. Use fewer/coarser bins "
+            "(numpix_rp x numpix_rt, from rmax and bin_size_r in "
+            "parameters.yml) or a smaller distortion_threads_per_block[2] to fit."
+            % (compute_d_shared_bytes, params.distortion_threads_per_block[2],
+               int(total_bins), np.dtype(np.int32).itemsize, max_shared))
 
     ldist = np.empty((total_bins,total_bins), dtype = params.gpu_dtype).nbytes
     dist_hist_d = cuda.mem_alloc(ldist)
@@ -223,7 +245,15 @@ def distortion_per_pixel(forest_list, **kargs):
 
         # Computing the total number of blocks per kernel. It is determined by the number of elements to be computed.
         total_blocks_x = int(np.ceil(forest1_lenght / params.distortion_threads_per_block[0]))
-        total_blocks_y = int(np.ceil(max_lenght / params.distortion_threads_per_block[1]))
+        # y only needs to cover this launch's actual kept neighbours
+        # (neigh_sizes), not the dataset-wide max_lenght every forest's
+        # buffer slot is padded to -- a forest1's neighbours are usually
+        # shorter than the longest forest in the whole set, so this skips
+        # blocks that would do no work (every thread in them fails the
+        # kernels' own `j < size2` check). Safe by construction: no
+        # neighbour's size2 exceeds neigh_sizes.max(), so no valid j is cut
+        # off. See IMPROVEMENTS.md #22.
+        total_blocks_y = int(np.ceil(int(neigh_sizes.max()) / params.distortion_threads_per_block[1]))
         total_blocks_z = int(np.ceil(number_of_neighs / params.distortion_threads_per_block[2]))
         total_blocks_dist = (total_blocks_x, total_blocks_y, total_blocks_z)
         total_blocks_x2 = int(np.ceil(shape_hist[0]*shape_hist[1] / params.threads_per_block_2d[0]))
@@ -255,10 +285,11 @@ def distortion_per_pixel(forest_list, **kargs):
         compute_d(max_lenght, numpix_d, base_d, neigh_index_d, neigh_sizes_d,
             gran_we_d, gran_dl_d,
             bin_rp, bin_rt,
-            activeBs_index,
+            activeBs_index, index_j,
             etas12, etas21, etas22, etas13, etas31, etas23, etas32, etas33,
             dist_hist_d,
-            block = params.distortion_threads_per_block, grid = total_blocks_dist
+            block = params.distortion_threads_per_block, grid = total_blocks_dist,
+            shared = compute_d_shared_bytes
             )
 
     cuda.memcpy_dtoh(dist_hist, dist_hist_d)
