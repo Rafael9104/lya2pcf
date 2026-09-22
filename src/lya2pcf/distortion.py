@@ -16,7 +16,7 @@ from mpi4py import MPI
 from . import parameters as params
 from .forest_class import quasar
 from . import pixel_partition
-from . import distortion_procedures_pycuda as distortion
+from . import mpi_devices
 
 
 def main():
@@ -24,8 +24,6 @@ def main():
     comm = MPI.COMM_WORLD
     mpi_rank = comm.Get_rank()
     mpi_size = comm.Get_size()
-    cuda_device = str(int(mpi_rank%params.number_of_cuda_devices + params.cuda_device_first_number))
-    os.environ['CUDA_DEVICE'] = cuda_device
 
     # Writing log files, one per mpi process
     os.makedirs(params.corr_dir, exist_ok=True)
@@ -58,6 +56,12 @@ def main():
 
     args = comm.bcast(args, root = 0)
     kwargs = comm.bcast(kwargs, root = 0)
+
+    # Before pycuda is imported (it creates its context on import), so the device chosen
+    # here is the one it gets.
+    cuda_device = mpi_devices.assign_gpu(comm)
+    print('worker', mpi_rank, 'will be using gpu number', cuda_device)
+    from . import distortion_procedures_pycuda as distortion
 
     ####################################################################
     #  Splitting the pixels between the available mpi ranks, and       #

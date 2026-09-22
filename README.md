@@ -81,8 +81,13 @@ Finally, to plot the results you can use the Jupyter notebook `two_point_analysi
 
 ## Machine configuration
 
-If you have several GPU's set `number_of_cuda_devices` equal to the number of devices per node. Also edit `cuda_device_first_number`
-in case you need to left free the first cuda devices in your machine.
+The GPUs per node are detected, so there is nothing to configure for them. Launch one MPI rank per GPU:
+```
+$ mpirun -np <number of nodes x GPUs per node> lya2pcf-correlate --gpu
+```
+The run stops with a message naming both numbers if a node gets more ranks than GPUs, and warns if it gets fewer (idle GPUs).
+Set `cuda_device_first_number` in `parameters.yml` if you need to leave the first cuda devices in your machine free.
+If a scheduler gives each task its own GPU through `CUDA_VISIBLE_DEVICES`, that is used as is and no check is made.
 
 
 ## Code Contributors

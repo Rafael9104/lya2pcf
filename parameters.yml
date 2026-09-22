@@ -103,6 +103,8 @@ max_threads: 1024
 
 number_of_neighs: 80
 
-# If using a machine with several cuda devices
-number_of_cuda_devices: 4
+# GPUs per node are detected, not configured: run mpirun with
+# -np <number of nodes> x <GPUs per node>. The run stops if a node has more
+# ranks than GPUs and warns if it has fewer.
+# Index of the first GPU to use on each node, to leave the first ones free.
 cuda_device_first_number: 0
