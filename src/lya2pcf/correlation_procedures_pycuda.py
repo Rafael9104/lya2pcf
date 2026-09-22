@@ -120,9 +120,28 @@ def init(plan, log_file_aux, shape_hist_aux, angmax_aux):
     global numpix_d
     global max_lenght
 
+    global pair_correlation_shared_bytes
+
     log_file = log_file_aux
     shape_hist = shape_hist_aux
     angmax = angmax_aux
+
+    # pair_correlation's per-block histogram (w_hist and dw_hist, both
+    # shape_hist-sized) lives in dynamic shared memory -- see the kernel's
+    # own comment. Checked once here, at the same size for every launch,
+    # since shape_hist is fixed for the run and a raw CUDA "out of shared
+    # memory" error at launch time would not say why or suggest a fix.
+    pair_correlation_shared_bytes = 2 * int(np.prod(shape_hist)) * np.dtype(myfloat).itemsize
+    max_shared = cuda.Context.get_device().get_attribute(
+        cuda.device_attribute.MAX_SHARED_MEMORY_PER_BLOCK)
+    if pair_correlation_shared_bytes > max_shared:
+        raise RuntimeError(
+            "pair_correlation's per-block histogram needs %d bytes of shared "
+            "memory (2 * %d * %d bins * %d bytes for %s), but this GPU only "
+            "has %d bytes per block. Use fewer/coarser bins (numpix_rp x "
+            "numpix_rt, from rmax and bin_size_r in parameters.yml) to fit."
+            % (pair_correlation_shared_bytes, shape_hist[0], shape_hist[1],
+               np.dtype(myfloat).itemsize, myfloat, max_shared))
 
     buffers = upload_forests(plan)
     data = buffers.data
@@ -161,11 +180,12 @@ def two_point_per_pixel(pixel, **kargs):
     # Passing data to the GPU
     rmax_d = gpuarray.to_gpu(np.array([params.rpmax,params.rtmax],dtype=myfloat))
     # y and z genuinely parallelize the kernel's two strided loops (over
-    # neighbours and over pixels within each neighbour), so they're the
-    # same shared 2D block used for order_active. x must stay 1: the
-    # kernel reads its pixel-in-forest1 index from blockIdx.x, not
-    # threadIdx.x, so blockDim.x > 1 would run the same accumulation
-    # redundantly and double-count into the histogram.
+    # pixels within each neighbour, and over neighbours -- y is the
+    # coalesced one, see the kernel's own comment), so they're the same
+    # shared 2D block used for order_active. x must stay 1: the kernel
+    # reads its pixel-in-forest1 index from blockIdx.x, not threadIdx.x,
+    # so blockDim.x > 1 would run the same accumulation redundantly and
+    # double-count into the histogram.
     threads_per_block = (1,) + params.threads_per_block_2d
 
     for forest1 in data[pixel]:
@@ -188,9 +208,9 @@ def two_point_per_pixel(pixel, **kargs):
 
         pair_correlation(base_d, neigh_index_d, neigh_sizes_d,
                 numpix2d_d, max_lenght,
-            rmax_d, w_hist_d, dw_hist_d, 
+            rmax_d, w_hist_d, dw_hist_d,
             gran_dc_d, gran_rx_d, gran_ry_d, gran_rz_d, gran_we_d, gran_dw_d, gran_x_d, gran_y_d, gran_z_d,
-            block = threads_per_block, grid = blocks_per_grid)
+            block = threads_per_block, grid = blocks_per_grid, shared = pair_correlation_shared_bytes)
         
         # This is necessary to avoid to overwrite x12, y12, z12, bin_r12 with the next forest
         pycuda.autoinit.context.synchronize()

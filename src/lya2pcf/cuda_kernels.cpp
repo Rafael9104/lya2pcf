@@ -107,14 +107,29 @@ __global__ void precompute_distances(int max_lenght, int *base, int *neigh_index
 
 __global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
         int *numpix, int max_lenght,
-        myfloat *rmax, myfloat *w_hist, myfloat *dw_hist, 
+        myfloat *rmax, myfloat *w_hist, myfloat *dw_hist,
         myfloat *dc, myfloat *rx, myfloat *ry, myfloat *rz,  myfloat *we, myfloat *dw, myfloat *x, myfloat *y, myfloat *z){
+    /* Per-block (per pixel-of-forest1) private histogram, in shared memory.
+       Sized dynamically at launch (2 * numpix_rp * numpix_rt * sizeof(myfloat),
+       see correlation_procedures_pycuda.py's `shared=`) since numpix comes from
+       parameters.yml, not a compile-time constant. Every thread of the block
+       accumulates into this instead of the global histogram, so the ~1024
+       threads' worth of atomics per pixel pair only ever contend on-chip;
+       only the final per-bin reduction below touches global memory, and only
+       for bins this block actually hit (see IMPROVEMENTS.md's kernel
+       profiling entry for the atomic-contention numbers this replaces). */
+    extern __shared__ myfloat pc_shared[];
+
     const myfloat rpmax = rmax[0];
     const myfloat rtmax = rmax[1];
     const int numpix_rp  = numpix[0];
     const int numpix_rt = numpix[1];
     const myfloat binner_rp = numpix_rp/rpmax;
     const myfloat binner_rt = numpix_rt/rtmax;
+    const int tot_pix = numpix_rp * numpix_rt;
+
+    myfloat *sh_w = pc_shared;
+    myfloat *sh_dw = pc_shared + tot_pix;
 
     const int indice1 = base[0];
     const int size1 = base[1];
@@ -122,10 +137,30 @@ __global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
     const int numero_neigs = base[2];
 
     const int i = blockIdx.x;
-    const int starty = threadIdx.y;
-    const int startz = threadIdx.z;
-    const int stridey = blockDim.y;
-    const int stridez = blockDim.z;
+    /* threadIdx.y is the fastest-varying dimension a warp packs (blockDim.x
+       is forced to 1 by the caller), so it drives k, the index *within* a
+       neighbour forest: dc/we/dw/rx/ry/rz store a forest's pixels
+       contiguously (offset = indice2*max_lenght + k), so a warp of
+       consecutive k at fixed neighbour reads consecutive addresses --
+       coalesced. threadIdx.z drives j, the neighbour index, which is a
+       gather over widely separated forests regardless of dimension order,
+       so it is the one kept outside the coalesced dimension. (The previous
+       version had this the other way round: a warp spanned 32 different
+       neighbours at one shared k, i.e. 32 unrelated addresses per load --
+       measured at 14.6% global load efficiency, see IMPROVEMENTS.md.) */
+    const int startk = threadIdx.y;
+    const int startj = threadIdx.z;
+    const int stridek = blockDim.y;
+    const int stridej = blockDim.z;
+
+    const int tid = threadIdx.y + threadIdx.z * blockDim.y;
+    const int nthreads = blockDim.y * blockDim.z;
+
+    for (int b = tid; b < tot_pix; b += nthreads) {
+        sh_w[b] = 0;
+        sh_dw[b] = 0;
+    }
+    __syncthreads();
 
     const myfloat x1 = x[indice1];
     const myfloat y1 = y[indice1];
@@ -139,7 +174,7 @@ __global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
         myfloat w_1 = we[indice1i];
         myfloat dw_1 = dw[indice1i];
 
-        for(int j = starty; j < numero_neigs; j+=stridey){
+        for(int j = startj; j < numero_neigs; j+=stridej){
             int indice2 = neigh_index[j];
             int size2 = neigh_sizes[j];
 
@@ -151,7 +186,7 @@ __global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
             myfloat cos_half12 = sqrt(0.5 * (1. + cos12));
             myfloat sin_half12 = sqrt(0.5 * (1. - cos12));
 
-            for(int  k = startz; k < size2; k+=stridez){
+            for(int  k = startk; k < size2; k+=stridek){
                 int indice2k = indice2 * max_lenght + k;
                 myfloat rc_2 = dc[indice2k];
                 myfloat w_2 = we[indice2k];
@@ -159,19 +194,25 @@ __global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
 
                 myfloat rp = fabs(rc_1 - rc_2) * cos_half12;
                 myfloat rt = (rc_1 + rc_2) * sin_half12;
-                
+
                 int binp = myfloat2int_rd(rp * binner_rp);
                 int bint = myfloat2int_rd(rt * binner_rt);
 
                 if(binp < numpix_rp && bint < numpix_rt){
                     hist_index = binp*numpix_rt + bint;
-                    atomicAdd(&w_hist[hist_index], w_1*w_2);
-                    atomicAdd(&dw_hist[hist_index], dw_1*dw_2);
+                    atomicAdd(&sh_w[hist_index], w_1*w_2);
+                    atomicAdd(&sh_dw[hist_index], dw_1*dw_2);
 
                 }
 
             }
         }
+    }
+
+    __syncthreads();
+    for (int b = tid; b < tot_pix; b += nthreads) {
+        if (sh_w[b] != 0) atomicAdd(&w_hist[b], sh_w[b]);
+        if (sh_dw[b] != 0) atomicAdd(&dw_hist[b], sh_dw[b]);
     }
 }
 
