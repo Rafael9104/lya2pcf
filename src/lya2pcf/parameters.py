@@ -6,6 +6,7 @@
     the LYA2PCF_CONFIG environment variable.
 """
 import os
+import warnings
 import numpy as np
 import yaml
 
@@ -107,5 +108,8 @@ max_threads = _cfg['max_threads']
 number_of_neighs = _cfg['number_of_neighs']
 
 # If using a machine with several cuda devices
-number_of_cuda_devices = _cfg['number_of_cuda_devices']
+# How many GPUs a node has is asked of the machine (mpi_devices.py), not configured.
+if 'number_of_cuda_devices' in _cfg:
+    warnings.warn("number_of_cuda_devices in %s is no longer used: the GPUs per node are detected. "
+                  "Run mpirun with -np <nodes> x <GPUs per node>. Remove the key." % _config_path)
 cuda_device_first_number = _cfg['cuda_device_first_number']

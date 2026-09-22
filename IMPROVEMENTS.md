@@ -1483,6 +1483,38 @@ by it for multi-node with one rank per GPU) and fail with a message
 naming both numbers, instead of leaving a silent mismatch to surface as
 either a CUDA error several layers down or, worse, no error at all.
 
+**Done (2026-09-21, branch `fix/gpu-per-node-check`)**, the `Split_type`
+version, not only the validation. New `mpi_devices.py`, used by
+`two_point.py` (only with `--gpu`) and `distortion.py`:
+
+- `number_of_cuda_devices` is gone from `parameters.yml`; a config that still
+  has it gets a warning that it is ignored. `cuda_device_first_number` stays
+  (it is a choice, not a machine fact).
+- A rank's device is `cuda_device_first_number` + its rank *within its node*
+  (`Split_type(COMM_TYPE_SHARED)`), so multi-node jobs assign correctly
+  instead of `global rank % configured count`.
+- **The `-np` is checked against the machine**, which answers "can we check the
+  user typed the right number": every rank reports (host, ranks on its node,
+  GPUs it sees) and rank 0 compares them per node. Any mismatch is an
+  error on all ranks naming the node and both numbers: more ranks than GPUs
+  would silently run several ranks on one GPU, fewer leaves GPUs idle (leave
+  some out deliberately with `cuda_device_first_number`). What it cannot
+  know is the number of nodes: `-np 4` on a 2-node job with 4 GPUs each
+  places 2 ranks per node and is stopped, but a job that puts the
+  wrong number of ranks on every node evenly is only caught by the per-node
+  count.
+- If `CUDA_VISIBLE_DEVICES` is set and each rank sees exactly one GPU (a
+  scheduler binding one GPU per task) the check is skipped and device 0 is
+  used.
+- Found on the way: `distortion.py` imported `distortion_procedures_pycuda` at
+  module level, which creates the CUDA context on import, *before* `main()`
+  set `CUDA_DEVICE`; the device assignment there never took effect. The import
+  is now inside `main()`, after the assignment.
+
+**Not done here:** 3pla still reads `number_of_cuda_devices` in its own
+`3pla.py` and needs to call `mpi_devices.assign_gpu` when it moves to this
+version.
+
 **Depends on:** nothing structural; the validation-only version is a
 small, independent, low-risk change and could be done first.
 
