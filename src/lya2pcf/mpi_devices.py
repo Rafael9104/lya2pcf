@@ -16,7 +16,6 @@
 
 import os
 import socket
-import warnings
 
 from mpi4py import MPI
 
@@ -48,7 +47,7 @@ def check_layout(layouts, first_device, bound_by_launcher=False):
     """Compares, for every node, the ranks placed on it with the GPUs it has.
 
     layouts   one (host, ranks_on_node, gpus_visible) per rank.
-    Returns (errors, warnings), lists of messages, one per node.
+    Returns the list of error messages, one per node that does not match.
     bound_by_launcher: CUDA_VISIBLE_DEVICES is set and every rank sees exactly
     one GPU -- a scheduler that gives each task its own GPU -- so there is
     nothing to compare.
@@ -56,7 +55,7 @@ def check_layout(layouts, first_device, bound_by_launcher=False):
     nodes = {}
     for host, ranks, gpus in layouts:
         nodes[host] = (ranks, gpus)
-    errors, warns = [], []
+    errors = []
     for host, (ranks, gpus) in sorted(nodes.items()):
         usable = gpus - first_device
         if bound_by_launcher and gpus == 1 and first_device == 0:
@@ -69,16 +68,16 @@ def check_layout(layouts, first_device, bound_by_launcher=False):
                           "ranks would run on the same GPU. Run mpirun with -np <nodes> x <GPUs per node>."
                           % (host, ranks, usable))
         elif ranks < usable:
-            warns.append("%s: %d ranks for %d usable GPU(s); %d GPU(s) will be idle. For all of them "
-                         "run mpirun with -np <nodes> x <GPUs per node>."
-                         % (host, ranks, usable, usable - ranks))
-    return errors, warns
+            errors.append("%s: %d ranks for %d usable GPU(s), so %d GPU(s) would sit idle. "
+                          "Run mpirun with -np <nodes> x <GPUs per node>."
+                          % (host, ranks, usable, usable - ranks))
+    return errors
 
 
 def assign_gpu(comm):
     """Sets CUDA_DEVICE for this rank and validates the -np against the GPUs.
     Collective: call it on every rank. Raises DeviceMismatch on all ranks if a
-    node has more ranks than GPUs; warns (once, from rank 0) if it has fewer.
+    node has a different number of ranks than usable GPUs.
     Returns the device index assigned to this rank."""
     local_rank, local_size = node_layout(comm)
     gpus = visible_gpu_count()
@@ -87,16 +86,14 @@ def assign_gpu(comm):
     first = params.cuda_device_first_number
     bound = 'CUDA_VISIBLE_DEVICES' in os.environ and gpus == 1
     if comm.Get_rank() == 0:
-        errors, warns = check_layout(layouts, first, bound_by_launcher=bound)
+        errors = check_layout(layouts, first, bound_by_launcher=bound)
     else:
-        errors, warns = None, None
-    errors, warns = comm.bcast((errors, warns), root=0)
+        errors = None
+    errors = comm.bcast(errors, root=0)
 
     if errors:
         raise DeviceMismatch("mpirun -np %d does not match the GPUs:\n  %s"
                              % (comm.Get_size(), "\n  ".join(errors)))
-    if warns and comm.Get_rank() == 0:
-        warnings.warn("\n  ".join(warns))
 
     device = 0 if bound else first + local_rank
     os.environ['CUDA_DEVICE'] = str(device)

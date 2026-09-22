@@ -1495,11 +1495,12 @@ version, not only the validation. New `mpi_devices.py`, used by
   instead of `global rank % configured count`.
 - **The `-np` is checked against the machine**, which answers "can we check the
   user typed the right number": every rank reports (host, ranks on its node,
-  GPUs it sees) and rank 0 compares them per node. More ranks than GPUs is an
-  error on all ranks naming the node and both numbers (it would silently run
-  several ranks on one GPU); fewer is a warning (idle GPUs). What it cannot
+  GPUs it sees) and rank 0 compares them per node. Any mismatch is an
+  error on all ranks naming the node and both numbers: more ranks than GPUs
+  would silently run several ranks on one GPU, fewer leaves GPUs idle (leave
+  some out deliberately with `cuda_device_first_number`). What it cannot
   know is the number of nodes: `-np 4` on a 2-node job with 4 GPUs each
-  places 2 ranks per node and gets the warning, but a job that puts the
+  places 2 ranks per node and is stopped, but a job that puts the
   wrong number of ranks on every node evenly is only caught by the per-node
   count.
 - If `CUDA_VISIBLE_DEVICES` is set and each rank sees exactly one GPU (a

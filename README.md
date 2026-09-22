@@ -85,7 +85,7 @@ The GPUs per node are detected, so there is nothing to configure for them. Launc
 ```
 $ mpirun -np <number of nodes x GPUs per node> lya2pcf-correlate --gpu
 ```
-The run stops with a message naming both numbers if a node gets more ranks than GPUs, and warns if it gets fewer (idle GPUs).
+The run stops with a message naming both numbers if a node gets a different number of ranks than it has GPUs (use `cuda_device_first_number` to leave some out on purpose).
 Set `cuda_device_first_number` in `parameters.yml` if you need to leave the first cuda devices in your machine free.
 If a scheduler gives each task its own GPU through `CUDA_VISIBLE_DEVICES`, that is used as is and no check is made.
 
