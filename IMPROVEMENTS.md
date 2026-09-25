@@ -2073,3 +2073,59 @@ only where `B` is read from changed), and #2 only removes wholly-idle
 blocks, so this is close to the best-case outcome for a change in this
 family — not run against a float64 build (no Pascal+ GPU here, see #7).
 
+## 23. `pair_correlation`: `__launch_bounds__(1024, 2)` to reach 100% occupancy
+
+**Branch `experiment/pair-correlation-launch-bounds`** (worktree
+`lya2pcf-launch-bounds`, off `main` at `92bfd82`, which already has #21/#22).
+Follow-up to #21: after the shared-memory fix, `pair_correlation` is 37
+registers/thread at `blockDim=1024`, which floors
+`65536 regs/SM / (37 * 1024) = 1` block/SM — 50% occupancy — while shared
+memory alone would allow 2 blocks/SM (`49152 / 20000B`, float32). Registers
+are the sole binding constraint, and the arithmetic is a hard threshold, not
+a gradual one: `65536 / (1024 * regs)` only crosses from 1 to 2 at
+**exactly 32 registers/thread or fewer** (33 still floors to 1). Given #21
+already dropped `stall_memory_dependency` from 79.0% to a much lower figure,
+there's genuine headroom now for more concurrent warps to help — unlike
+before #21, when atomic contention so dominated that occupancy probably
+wouldn't have mattered.
+
+Tried the standard low-effort lever before touching the kernel body: added
+`__launch_bounds__(1024, 2)` to the kernel signature, which tells `nvcc` to
+cap register allocation at `65536 / (1024*2) = 32`/thread, spilling to local
+memory if it can't fit. One-line change, easily reverted.
+
+**Result: nvcc hit the target exactly**, no rewrite needed.
+
+| | main (#21/#22) | `__launch_bounds__(1024, 2)` |
+|---|---|---|
+| registers/thread | 37 | **32** |
+| local memory (spill) | 0 B | 8 B/thread |
+| blocks/SM (by registers) | 1 | **2** |
+| theoretical occupancy | 50% | **100%** |
+
+**Checked against real data** (209 pixels, 21,150 forests, DESI-extracted,
+`max_lenght` 967, `rmax` 40, `gpu_precision: float32`; one warm-up launch
+excluded from timing):
+
+| | main | `__launch_bounds__(1024, 2)` | |
+|---|---|---|---|
+| 40 pixels | 5.137 s | 3.573 s | 1.44x |
+| 209 pixels (full set) | 29.670 s | 20.463 s | **1.45x** |
+
+Consistent ~31% wall-clock reduction at both sizes — not the ~2x a naive
+doubling-of-occupancy might suggest, presumably because occupancy was only
+*one* of several remaining bottlenecks (global memory bandwidth for the
+final per-bin histogram reduction doesn't change), but a real, reproducible
+win for a one-line change with negligible spill.
+
+**Correctness.** `w_hist`/`dw_hist` sums, 209 pixels: main
+`5439691366.659180` / `1175675.243091` vs. launch_bounds
+`5439691345.815430` / `1175675.258195` — relative differences of 3.8e-9 and
+1.3e-8, ordinary float32 accumulation-order noise (same class as #21's), not
+a regression.
+
+**Status: measured, not yet merged.** Left on its own experimental branch
+pending a decision on whether to merge — the win is real and cheap, so this
+is a good candidate, but see #21/#22 for how often a plausible-looking
+occupancy lever in this codebase turned out not to be free (register
+spill's cost here is small, 8 B/thread, but wasn't zero).

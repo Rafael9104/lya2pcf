@@ -105,11 +105,23 @@ __global__ void precompute_distances(int max_lenght, int *base, int *neigh_index
 }
 
 
-__global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
+__global__ void __launch_bounds__(1024, 2) pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
         int *numpix, int max_lenght,
         myfloat *rmax, myfloat *w_hist, myfloat *dw_hist,
         myfloat *dc, myfloat *rx, myfloat *ry, myfloat *rz,  myfloat *we, myfloat *dw, myfloat *x, myfloat *y, myfloat *z){
-    /* Per-block (per pixel-of-forest1) private histogram, in shared memory.
+    /* EXPERIMENT (branch experiment/pair-correlation-launch-bounds): as
+       profiled on main, this kernel uses 37 registers/thread with
+       blockDim=1024, which floors 65536/(37*1024) to 1 block/SM (50%
+       occupancy) -- registers are the binding constraint, not the shared
+       memory below (49152/20000B = 2 blocks/SM by that measure alone).
+       65536/(1024*regs) only crosses from 1 to 2 blocks/SM at <=32
+       regs/thread exactly (a threshold, not a gradual improvement), so
+       __launch_bounds__(1024, 2) instructs nvcc to target that budget,
+       spilling to local memory if it can't fit everything in 32
+       registers. Unverified whether the spill cost (if any) outweighs
+       the occupancy gain -- that's what this branch measures.
+
+       Per-block (per pixel-of-forest1) private histogram, in shared memory.
        Sized dynamically at launch (2 * numpix_rp * numpix_rt * sizeof(myfloat),
        see correlation_procedures_pycuda.py's `shared=`) since numpix comes from
        parameters.yml, not a compile-time constant. Every thread of the block
