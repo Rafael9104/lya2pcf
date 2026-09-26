@@ -2180,6 +2180,44 @@ every run (relative spread 2e-9, the same as `main` against itself).
 which could matter for float64 runs, **not measured: no Pascal-or-newer GPU
 here**), one small host-to-device copy less per forest, and no leftover arrays
 to keep in step with the kernel signature. Only `pair_correlation` was
-converted: `precompute_distance_and_angles`, `precompute_distances`,
-`compute_etas`, `compute_d` and `order_active` still take `base` / `numpix`
-arrays. Not run on an A100.
+converted: `precompute_distances`, `compute_etas`, `compute_d` and
+`order_active` still take `base` / `numpix` arrays (`precompute_distance_and_angles`
+no longer exists here, see #25). Not run on an A100.
+
+## 25. Kernel signatures: `const` everywhere, `__restrict__` only where it was measured to help
+
+Tidiness pass over `cuda_kernels.cpp`, with a timing guard so nothing gets slower.
+
+**Duplicate kernel removed.** `precompute_distance_and_angles` was a copy of the
+kernel of the same name in 3pla (its only user; nothing in lya2pcf launched
+it). It lives only in 3pla now, so there is one home for it.
+
+**`const` on every input pointer** of `pair_correlation`, `precompute_distances`,
+`compute_etas`, `compute_d` and `order_active` (the kernel only reads it), so
+the signature says which buffers are outputs. This is free: the machine code of
+`pair_correlation` and `compute_d` (float, `sm_52`) is identical to before.
+
+**`__restrict__` on top of it, only where it paid off.** `__restrict__` promises
+that no two pointers of a launch alias (true in both drivers: every buffer is
+its own allocation). On Maxwell it turns plain global loads into cached
+non-coherent loads (`LDG.E.CI`), which helps or hurts depending on the kernel.
+`nvprof` GPU time, GTX 970, float32, the variants run in rotated order (the GPU
+drifts ~13% slower over a session, so a fixed order misleads):
+
+| kernel | with `__restrict__` vs. none |
+|---|---|
+| `order_active` | -30 .. -35% |
+| `compute_etas` | -12 .. -18% |
+| `precompute_distances` | -7 .. -15% |
+| `compute_d` | 0 .. +4% (never faster; `const` alone is neutral) |
+| `pair_correlation` | +1.4% (4 of 4 rounds; `const` alone +0.1%) |
+
+So the first three keep `const * __restrict__` inputs and `__restrict__`
+outputs; `pair_correlation` and `compute_d` have `const` only. The rule and
+these numbers are in a "Signature convention" comment at the top of the file.
+Registers are unchanged (32 in `compute_d`, `pair_correlation`).
+
+**Noticed, not changed.** `pair_correlation` still takes `rx, ry, rz`, which it
+never reads, and the distortion driver allocates four scratch buffers
+(`x12, y12, z12, r12`, `4 * max_lenght^2 * neighbours * itemsize`) that
+`precompute_distances` writes and no kernel reads.
