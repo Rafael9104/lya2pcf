@@ -2124,11 +2124,9 @@ win for a one-line change with negligible spill.
 1.3e-8, ordinary float32 accumulation-order noise (same class as #21's), not
 a regression.
 
-**Status: measured, not yet merged.** Left on its own experimental branch
-pending a decision on whether to merge — the win is real and cheap, so this
-is a good candidate, but see #21/#22 for how often a plausible-looking
-occupancy lever in this codebase turned out not to be free (register
-spill's cost here is small, 8 B/thread, but wasn't zero).
+**Status: merged** (PR #29, 2026-09-23). The win was real and cheap; the
+register spill it costs is small (8 B/thread in float) but was not zero, which
+#24 then removes.
 
 ## 24. `pair_correlation`: launch scalars by value instead of small device arrays
 
