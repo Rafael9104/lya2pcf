@@ -91,11 +91,13 @@ def main():
         from . import correlation_procedures_cpu as correlations
         data = pixel_partition.load_rank_data(params.data_dir, owned_pixels, buffer_pixels, index['pixel_file'])
         correlations.init(data, log_file, shape_hist, angmax)
+        two_point_per_pixel = correlations.two_point_per_pixel
     else:
         from . import correlation_procedures_pycuda as correlations
         plan = pixel_partition.plan_rank_data(params.data_dir, index, owned_pixels, buffer_pixels)
         log_file.write('\nStreaming ' + str(plan.count_forests) + ' forests from ' + str(len(plan.files)) + ' data files to the GPU.')
-        correlations.init(plan, log_file, shape_hist, angmax)
+        correlator = correlations.TwoPointGPU(plan, shape_hist, angmax)
+        two_point_per_pixel = correlator.two_point_per_pixel
 
     num_pixels_partial = len(owned_pixels)
     log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
@@ -115,7 +117,7 @@ def main():
         log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
         log_file.flush()
 
-        histo = correlations.two_point_per_pixel(pixel)
+        histo = two_point_per_pixel(pixel)
 
         np.save(os.path.join(params.corr_dir, name_partials + str(pixel)), histo)
         pixel_counter += 1
