@@ -179,11 +179,11 @@ class TwoPointGPU:
                     neigh_index_d, neigh_sizes_d,
                     numpix_rp, numpix_rt, np.int32(b.max_lenght),
                     rpmax, rtmax, w_hist_d, dw_hist_d,
-                b.gran_dc_d, b.gran_rx_d, b.gran_ry_d, b.gran_rz_d, b.gran_we_d, b.gran_dw_d,
+                b.gran_dc_d, b.gran_we_d, b.gran_dw_d,
                 b.gran_x_d, b.gran_y_d, b.gran_z_d,
                 block = threads_per_block, grid = blocks_per_grid, shared = self.shared_bytes)
 
-            # This is necessary to avoid to overwrite x12, y12, z12, bin_r12 with the next forest
+            # Wait for this forest's launch before starting the next one.
             pycuda.autoinit.context.synchronize()
 
         return (w_hist_d.get(), dw_hist_d.get())

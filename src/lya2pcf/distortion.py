@@ -42,7 +42,7 @@ def main():
                 'memory from 4 slices up on DR1); ring gives horizontal bands, which is better for only 2 slices.')
 
         parser.add_argument('--verbose', action = 'store_true', required = False,
-                help = 'Show statistics of computation time. Only computes the distortion matrix for a few forests.')
+                help = 'Quick test run: stops after the first two pixels of each rank (no timing statistics are printed).')
 
         args = parser.parse_args()
     else:

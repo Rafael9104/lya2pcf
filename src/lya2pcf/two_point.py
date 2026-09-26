@@ -40,7 +40,7 @@ def main():
             help='Compute the forest correlation with the help of a GPU.')
 
         parser.add_argument('--verbose', action = 'store_true', required = False,
-            help = 'Show statistics of computation time. Only computes the correlation for a few forests.')
+            help = 'Quick test run: stops after the first two pixels of each rank (no timing statistics are printed).')
 
         parser.add_argument('--partition-order', choices=['nest', 'ring'], default='nest', required=False,
             help='How the healpix pixels are ordered before being cut into one contiguous slice per MPI rank. '
