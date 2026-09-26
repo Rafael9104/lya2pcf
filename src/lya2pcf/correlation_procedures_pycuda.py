@@ -175,10 +175,11 @@ def two_point_per_pixel(pixel, **kargs):
     # Preparing data structure for the partial histograms
     w_hist_d = gpuarray.zeros(shape_hist, dtype = myfloat)
     dw_hist_d = gpuarray.zeros(shape_hist, dtype = myfloat)
-    numpix2d_d = gpuarray.to_gpu(np.array(shape_hist, dtype = np.int32))
 
-    # Passing data to the GPU
-    rmax_d = gpuarray.to_gpu(np.array([params.rpmax,params.rtmax],dtype=myfloat))
+    # The per-launch scalars go to the kernel by value (numpy scalars: pycuda
+    # picks the C type from the numpy type), not through small device arrays.
+    numpix_rp, numpix_rt = np.int32(shape_hist[0]), np.int32(shape_hist[1])
+    rpmax, rtmax = myfloat(params.rpmax), myfloat(params.rtmax)
     # y and z genuinely parallelize the kernel's two strided loops (over
     # pixels within each neighbour, and over neighbours -- y is the
     # coalesced one, see the kernel's own comment), so they're the same
@@ -196,19 +197,18 @@ def two_point_per_pixel(pixel, **kargs):
             # This forest have zero neighbors
             continue
         forest1_lenght = forest1.num_points
-        base = np.array([forest1.index, forest1_lenght, len(neighbors)],dtype=np.int32)
         neigh_index = np.array([forest2.index for forest2 in neighbors],dtype=np.int32)
         neigh_sizes = np.array([forest2.num_points for forest2 in neighbors], dtype = np.int32)
-        base_d = gpuarray.to_gpu(base)
         neigh_index_d = gpuarray.to_gpu(neigh_index)
         neigh_sizes_d = gpuarray.to_gpu(neigh_sizes)
 
         # Be careful, this can not change unless the kernel procedure change.
         blocks_per_grid = (forest1_lenght, 1, 1)
 
-        pair_correlation(base_d, neigh_index_d, neigh_sizes_d,
-                numpix2d_d, max_lenght,
-            rmax_d, w_hist_d, dw_hist_d,
+        pair_correlation(np.int32(forest1.index), np.int32(forest1_lenght), np.int32(len(neighbors)),
+                neigh_index_d, neigh_sizes_d,
+                numpix_rp, numpix_rt, np.int32(max_lenght),
+                rpmax, rtmax, w_hist_d, dw_hist_d,
             gran_dc_d, gran_rx_d, gran_ry_d, gran_rz_d, gran_we_d, gran_dw_d, gran_x_d, gran_y_d, gran_z_d,
             block = threads_per_block, grid = blocks_per_grid, shared = pair_correlation_shared_bytes)
         
