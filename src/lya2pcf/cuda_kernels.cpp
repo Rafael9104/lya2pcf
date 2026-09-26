@@ -112,17 +112,14 @@ __global__ void __launch_bounds__(1024, 2) pair_correlation(
         const myfloat rpmax, const myfloat rtmax,
         myfloat *w_hist, myfloat *dw_hist,
         myfloat *dc, myfloat *rx, myfloat *ry, myfloat *rz,  myfloat *we, myfloat *dw, myfloat *x, myfloat *y, myfloat *z){
-    /* EXPERIMENT (branch experiment/pair-correlation-launch-bounds): as
-       profiled on main, this kernel uses 37 registers/thread with
-       blockDim=1024, which floors 65536/(37*1024) to 1 block/SM (50%
-       occupancy) -- registers are the binding constraint, not the shared
-       memory below (49152/20000B = 2 blocks/SM by that measure alone).
-       65536/(1024*regs) only crosses from 1 to 2 blocks/SM at <=32
-       regs/thread exactly (a threshold, not a gradual improvement), so
-       __launch_bounds__(1024, 2) instructs nvcc to target that budget,
-       spilling to local memory if it can't fit everything in 32
-       registers. Unverified whether the spill cost (if any) outweighs
-       the occupancy gain -- that's what this branch measures.
+    /* __launch_bounds__(1024, 2): the block is 1024 threads, and two blocks
+       fit on an SM only if the kernel uses at most 32 registers per thread
+       (65536 / (1024 * 2)); at 33 or more the count floors to one block per SM
+       (50% occupancy). Without the hint nvcc allocates 37 in float, so the hint
+       is what keeps two blocks resident. Passing the per-launch scalars by
+       value (below) brings the natural demand down to 32 in float, so the hint
+       no longer forces a spill there; in double it still spills a little
+       (IMPROVEMENTS.md #23, #24).
 
        Per-block (per pixel-of-forest1) private histogram, in shared memory.
        Sized dynamically at launch (2 * numpix_rp * numpix_rt * sizeof(myfloat),
