@@ -1,6 +1,4 @@
 import numpy as np
-import time
-import math
 from numba.core.decorators import jit
 
 from . import parameters as params
@@ -17,7 +15,7 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux):
     angmax = angmax_aux
 
 
-def two_point_per_pixel(pixel, **kargs):
+def two_point_per_pixel(pixel):
     """ This function computes the weighted sum of w and delta*w for all pairs of data
     and stores them in histograms to prepare for the correlation function. The
     histograms are stored by healpix pixel of the first element in the pair.

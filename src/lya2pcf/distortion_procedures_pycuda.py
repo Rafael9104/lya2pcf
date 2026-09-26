@@ -1,9 +1,8 @@
 import numpy as np
 import random
-import time
 
 import pycuda.driver as cuda
-import pycuda.autoinit
+import pycuda.autoinit  # noqa: F401  (creates the CUDA context every pycuda call in this module uses)
 import pycuda.gpuarray as gpuarray
 
 from . import parameters as params
@@ -191,7 +190,7 @@ def init(plan, log_file_aux, shape_hist_aux, angmax_aux, reject_aux):
     bin_rp = cuda.mem_alloc(size_auxiliars_int)
 
     return data
-def distortion_per_pixel(forest_list, **kargs):
+def distortion_per_pixel(forest_list):
     """ This function loops over the forests in a pixel and finds its neighbors
     I will use the method by Helion and only setting r1 as the center node
     of the triangle.

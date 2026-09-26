@@ -8,13 +8,12 @@
 
 import argparse
 import os
-import time
 
 import numpy as np
 from mpi4py import MPI
 
 from . import parameters as params
-from .forest_class import quasar
+from .forest_class import quasar  # noqa: F401  (imported for its side effect: forest_class registers the legacy 'forest_class' module alias that older data*.npy files need to unpickle)
 from . import pixel_partition
 from . import mpi_devices
 
@@ -46,16 +45,10 @@ def main():
                 help = 'Show statistics of computation time. Only computes the distortion matrix for a few forests.')
 
         args = parser.parse_args()
-
-        kwargs = {}
-        if args.verbose:
-            kwargs['performance'] = True
     else:
         args = None
-        kwargs = None
 
     args = comm.bcast(args, root = 0)
-    kwargs = comm.bcast(kwargs, root = 0)
 
     # Before pycuda is imported (it creates its context on import), so the device chosen
     # here is the one it gets.
@@ -104,7 +97,7 @@ def main():
             log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
             log_file.flush()
 
-            disto_pix, weight_pix = distortion.distortion_per_pixel(data[pixel], **kwargs)
+            disto_pix, weight_pix = distortion.distortion_per_pixel(data[pixel])
             disto += disto_pix
             weight_A += weight_pix
 

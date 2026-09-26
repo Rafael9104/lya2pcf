@@ -1,5 +1,4 @@
 import numpy as np
-import time
 from dataclasses import dataclass
 
 import pycuda.driver as cuda
@@ -160,7 +159,7 @@ def init(plan, log_file_aux, shape_hist_aux, angmax_aux):
     return data
 
 
-def two_point_per_pixel(pixel, **kargs):
+def two_point_per_pixel(pixel):
     """ This function computes the weighted sum of w and delta*w for all pairs of data
     and stores them in histograms to prepare for the correlation function. The
     histograms are stored by healpix pixel of the first element in the pair.
