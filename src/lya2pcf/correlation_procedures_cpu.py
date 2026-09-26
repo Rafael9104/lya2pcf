@@ -19,7 +19,7 @@ def two_point_per_pixel(pixel):
     """ This function computes the weighted sum of w and delta*w for all pairs of data
     and stores them in histograms to prepare for the correlation function. The
     histograms are stored by healpix pixel of the first element in the pair.
-    Parammeters:
+    Parameters:
     pixel   int
             The healpix pixel of the first element in the pair.
     angmax real
@@ -46,7 +46,7 @@ def two_point_per_pixel(pixel):
 def pair_correlation(angmax, ra1,dec1,w1,dw1,pl1,dc1,fib1,ra2,dec2,w2,dw2,pl2,dc2,fib2):
     """ Computes the sum of w and delta*w for a pair of forests and stores it in
     a histogram according to their distance.
-    Parammeters:
+    Parameters:
     angmax: Real           Maximum angle between forests to be considered in the histograms.
     ra1, dec1:  Real            Right assention and declination of the first forest.
     w1, dw1:    Array(Real)     Weight and delta times weight of the forest.

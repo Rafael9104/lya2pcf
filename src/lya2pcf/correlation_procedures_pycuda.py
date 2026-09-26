@@ -95,7 +95,7 @@ def upload_forests(plan):
 def init(plan, log_file_aux, shape_hist_aux, angmax_aux):
     """ Copies the forests of `plan` to the GPU once, to avoid the overhead of
     copying them at every call (see upload_forests).
-    Parammeters:
+    Parameters:
     plan        pixel_partition.ForestPlan
                 The rank's own pixels plus their neighbour buffer.
 
@@ -163,7 +163,7 @@ def two_point_per_pixel(pixel):
     """ This function computes the weighted sum of w and delta*w for all pairs of data
     and stores them in histograms to prepare for the correlation function. The
     histograms are stored by healpix pixel of the first element in the pair.
-    Parammeters:
+    Parameters:
     pixel   int
             The healpix pixel of the first element in the pair.
     angmax real

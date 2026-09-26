@@ -25,7 +25,7 @@ forests_seen = 0
 def init(plan, log_file_aux, shape_hist_aux, angmax_aux, reject_aux):
     """ Copies the forests of `plan` to the GPU once, to avoid the overhead of copying
     them at every call, and allocates the distortion's scratch buffers.
-    Parammeters:
+    Parameters:
     plan        pixel_partition.ForestPlan
                 The rank's own pixels plus their neighbour buffer. The data*.npy files are
                 read one at a time and copied pixel by pixel, never all held in host memory
