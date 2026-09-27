@@ -16,7 +16,7 @@ from mpi4py import MPI
 from . import parameters as params
 from .forest_class import quasar
 from . import pixel_partition
-from . import distortion_procedures_pycuda as distortion
+from . import mpi_devices
 
 
 def main():
@@ -24,8 +24,6 @@ def main():
     comm = MPI.COMM_WORLD
     mpi_rank = comm.Get_rank()
     mpi_size = comm.Get_size()
-    cuda_device = str(int(mpi_rank%params.number_of_cuda_devices + params.cuda_device_first_number))
-    os.environ['CUDA_DEVICE'] = cuda_device
 
     # Writing log files, one per mpi process
     os.makedirs(params.corr_dir, exist_ok=True)
@@ -38,6 +36,11 @@ def main():
 
         parser.add_argument('--excluded', default = 0.95, required = False,
                 help = 'Fraction of forests pairs excluded from the computation.')
+
+        parser.add_argument('--partition-order', choices=['nest', 'ring'], default='nest', required=False,
+                help='How the healpix pixels are ordered before being cut into one contiguous slice per MPI rank. '
+                'nest gives compact regions, so a rank needs a smaller buffer of neighbouring pixels (much less GPU '
+                'memory from 4 slices up on DR1); ring gives horizontal bands, which is better for only 2 slices.')
 
         parser.add_argument('--verbose', action = 'store_true', required = False,
                 help = 'Show statistics of computation time. Only computes the distortion matrix for a few forests.')
@@ -54,6 +57,12 @@ def main():
     args = comm.bcast(args, root = 0)
     kwargs = comm.bcast(kwargs, root = 0)
 
+    # Before pycuda is imported (it creates its context on import), so the device chosen
+    # here is the one it gets.
+    cuda_device = mpi_devices.assign_gpu(comm)
+    print('worker', mpi_rank, 'will be using gpu number', cuda_device)
+    from . import distortion_procedures_pycuda as distortion
+
     ####################################################################
     #  Splitting the pixels between the available mpi ranks, and       #
     #  figuring out which files (own pixels + neighbour buffer) this   #
@@ -61,7 +70,7 @@ def main():
     ####################################################################
 
     index = pixel_partition.load_index(params.data_dir)
-    owned_pixels = pixel_partition.assign_pixels(index['pixel_file'], mpi_size, mpi_rank)
+    owned_pixels = pixel_partition.assign_pixels(index['pixel_file'], mpi_size, mpi_rank, order=args.partition_order)
     angmax = 2*np.arcsin(0.5*params.rtmax/index['min_distance'])
     shape_hist = (params.numpix_rp, params.numpix_rt)
     total_bins = np.prod(shape_hist)
@@ -74,10 +83,12 @@ def main():
 
     if len(owned_pixels) > 0:
         buffer_pixels = pixel_partition.find_buffer_pixels(owned_pixels, angmax, set(index['pixel_file']))
-        log_file.write('\nLoaded a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
-        data = pixel_partition.load_rank_data(params.data_dir, owned_pixels, buffer_pixels, index['pixel_file'])
+        log_file.write('\nFound a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
 
-        distortion.init(data, log_file, shape_hist, angmax, float(args.excluded))
+        # Streamed to the GPU one data file at a time; see streaming_upload.py.
+        plan = pixel_partition.plan_rank_data(params.data_dir, index, owned_pixels, buffer_pixels)
+        log_file.write('\nStreaming ' + str(plan.count_forests) + ' forests from ' + str(len(plan.files)) + ' data files to the GPU.')
+        data = distortion.init(plan, log_file, shape_hist, angmax, float(args.excluded))
 
         ###############################################################################
         # This is the core of the program, where the distortion matrix is computed    #
@@ -105,6 +116,13 @@ def main():
         log_file.write('\nNo pixels assigned to this rank; nothing to do.')
         print('Rank', mpi_rank, 'has no pixels to compute.')
 
+    if distortion.clamped_forests > 0:
+        clamp_message = ('%d of %d forests (%.2f%%) had more neighbours than number_of_neighs=%d after the '
+            'exclusion and were capped.' % (distortion.clamped_forests, distortion.forests_seen,
+            100.*distortion.clamped_forests/distortion.forests_seen, params.number_of_neighs))
+        print('Rank', mpi_rank, clamp_message)
+        log_file.write('\n' + clamp_message)
+        log_file.flush()
     print('Finished distortion computation.')
     if mpi_size > 1:
         distortion_total = comm.reduce(disto)

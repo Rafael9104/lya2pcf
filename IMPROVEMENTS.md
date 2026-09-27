@@ -4,12 +4,12 @@ Working notes from 2026-09-10. Not committed to git by default (personal
 planning doc, not project documentation) — delete, commit, or move it
 wherever you like.
 
-## Still to do (2026-09-18)
+## Still to do (2026-09-21)
 
 Every other item on this list is done. Remaining:
 
-- **#4** — In-memory pipeline (skip `data.npy` round-trip)
-- **#6** — Single host-memory copy shared across multiple GPUs (one node)
+- **#4** — In-memory pipeline (skip `data.npy` round-trip) — **now the
+  best next target for wall time, see the 2026-09-18 measurements in the item**
 - **#11** — Add a rebinning (coadding) procedure to lya2pcf
 - **#13** — Forests are padded to `max_lenght`, wasting a large share of
   GPU memory
@@ -20,6 +20,23 @@ Every other item on this list is done. Remaining:
 - **#17** — Multi-GPU runs split "how many GPUs" across two unrelated
   places
 - **#18** — mpi4py is a hard dependency even for a single process
+- **#19** — Full DR1 correlation measured: 12.0 h on a GTX 970, 66%
+  compute (GPU-bound) and 34% file loading (measured 2026-09-19). Its
+  "atomic contention" hypothesis for the GPU-kernel share is now
+  measured and fixed, see **#21**.
+- **#21** — `pair_correlation`: shared-memory histogram + coalesced
+  loop order — **done 2026-09-21** (this session), branch
+  `perf/kernel-efficiency`. 23% less GPU kernel time on the small test
+  set, and (unexpectedly) ~440x less float32 histogram round-off too.
+  Not yet run at full-DR1 scale or merged.
+- **#22** — Distortion kernels profiled: `compute_d` is 87% of GPU time,
+  driven by a redundant per-thread global-memory scan (not the loop
+  length itself) plus padding-driven occupancy loss. Options 1-2
+  (shared-memory cache + real neighbour-length grid sizing) **done
+  2026-09-22**: -5.8% GPU kernel time, -26% relative on the targeted
+  stall reason, correctness checked. Option 3 (reducing `d_hist`'s own
+  atomic traffic, now the larger remaining cost) is not attempted — see
+  the item.
 
 ## 1. `src/lya2pcf/` layout + pip-installable package
 
@@ -346,6 +363,55 @@ for the `max_lenght` handling mentioned above (currently threaded through
 `parameters.py`, needs to become an explicit return value/argument when
 extraction and correlation share a process).
 
+### Measured on the full DESI DR1 set (2026-09-18) — why this is next
+
+Data: 1028 delta files (5.5 GB gz) → 428,403 forests, longest 967 pixels,
+extracted into 60 `data*.npy` files (14 GB, ~236 MB each). GTX 970,
+float32, `/programs` disk (~51 MB/s sequential write, measured with `dd`).
+
+- **Extraction (`lya2pcf-extract --split-number 60`): 7 min 40 s**, from
+  file timestamps. Pass 1 (positions of all 1028 files) ~85 s, pass 2
+  (60 chunks) ~375 s, ~6.4 s per 236 MB chunk. At 51 MB/s the 14 GB of
+  writes alone take ~280 s, so **writing the pickled files is roughly
+  three quarters of pass 2**. The extraction itself is cheap.
+- **Correlation, one random chunk (chunk 1 of 60, 61 pixels, 37 of the 60
+  files needed): 103 s**, of which `load` (read + unpickle the
+  `data*.npy` files) 39.7 s = 40%, `compute` (neighbour search + kernels)
+  59.5 s = 60%, GPU upload 0.3 s, saving the histograms ~0.
+  Read speed ~1.07 s per file. (The disk cache may have helped a little,
+  and part of that per-file time is single-threaded unpickling, not disk.)
+- **Extrapolated full correlation: ~3 h (WRONG, see #19: the real run took 12.0 h)**, about 2.1 h compute + 1.0 h
+  load. Chunk 1 is one of the smallest (3,292 owned forests against a
+  median 6,930, max 11,947), so the compute figure (18 ms per owned
+  forest) is rough.
+- **The load share is bigger than it needs to be because of the pixel
+  order.** Each chunk reads 34–60 of the 60 files (3,397 file loads in
+  total for 60 chunks, ~780 GB) since RING-ordered healpix indices are
+  not spatially local (see #15). Making the chunks spatially compact
+  (e.g. NEST order, matching how the extraction groups files) would cut
+  reads, but skipping the disk round-trip removes the writes *and* the
+  reads.
+
+So ditching `data*.npy` would remove about a third of the correlation
+time and most of the extraction time. It does **not** touch the compute
+share, which needs fewer/coarser bins or a faster GPU.
+
+### Sequential chunks on one GPU (branch `feat/sequential-chunks`, not merged)
+
+`lya2pcf-correlate` and `lya2pcf-distort` take `--chunks N`: each rank
+processes chunks `rank, rank+size, ...` one after the other, loading
+only that chunk's files and freeing GPU memory (`release()`) in between.
+With one rank the chunks run sequentially on one GPU. `--only-chunk C`
+runs a single chunk, and `two_point.py` logs the time per phase
+(load / upload / compute / save). Verified on the small set: identical
+to the single-chunk run within float32 noise (6e-6 histograms, 1.6e-6
+distortion), also with `mpirun -np 2 --chunks 4` for the correlation.
+Left out of `main` on purpose for now. Known gaps: no resume (a crash
+loses the run; the per-pixel histograms are on disk, so a "skip pixels
+already saved" check would be small), and the 60-chunk worst case needs
+2.61 GB of forest buffers, so `--chunks` must be chosen from the data
+(20 chunks would not fit a 4 GB card).
+
 **Caveat:** this only applies to the single-process (`--cpu` /
 single-GPU, no MPI split across files) path. `2pla.py`'s multi-rank
 MPI flow loads independently per rank, which is where item 6 also
@@ -382,6 +448,13 @@ replaced with `os.path.join(params.data_dir, ...)` /
 concatenation remains anywhere.
 
 ## 6. Single host-memory copy shared across multiple GPUs (one node)
+
+> **Resolved (2026-09-21) for what motivated it, the host RAM per rank: see
+> #20.** With the streaming upload each rank holds about one data file plus
+> light per-forest metadata (0.63-0.67 GB measured), independent of the slice,
+> so four ranks on one node no longer need a shared copy. What is below is the
+> original analysis of the shared-memory design, kept for the record; it is no
+> longer on the to-do list.
 
 Current architecture: `2pla.py` is launched under `mpirun -np N`, one MPI
 *process* per GPU. Each rank independently does
@@ -839,6 +912,30 @@ float64 compiles, or accepting float32 for the comparison (bearing in
 mind the non-determinism noted in #7, so compare within ~1e-7 rather
 than for equality).
 
+**Does this make the distortion fit a small GPU? No (checked 2026-09-18
+on DR1, 428k forests, longest 967, 2500 bins, `number_of_neighs=80`,
+float32).** The CSR layout only shrinks the per-forest data buffers (about
+1 GB for a 120-chunk run, ~39% of it padding). The distortion's fixed
+scratch buffers are what does not fit: 4.6 GB, made of `etas*`
+(`bins x max_lenght x neighs`, 3.1 GB) and `x12/y12/z12/r12/bin_rp/bin_rt`
+(`max_lenght^2 x neighs`, 1.5 GB). They are working space for one first
+forest and its neighbours, sized by the *longest* forest, so per-forest
+offsets do not shrink them. What would (fixed scratch, neighs=80 / 40):
+
+| longest forest kept | neighs=80 | neighs=40 |
+|---|---|---|
+| 967 (current) | 4.56 GB | 2.28 GB |
+| 940 (p99) | 4.38 GB | 2.19 GB |
+| 829 (p90) | 3.70 GB | 1.85 GB |
+| 660 (≈median) | 2.75 GB | 1.37 GB |
+
+(Forest lengths in three sampled files, 21,424 forests: mean 581, median
+643, p90 829, p99 940, max 966.) Capping length barely helps and throws
+away data; the real levers are `number_of_neighs` (linear; but see #16,
+and it must stay above the ~50 neighbours kept at `--excluded 0.95`),
+coarser bins (`etas*` is linear in bins), or tiling the neighbour loop so
+scratch is sized by a tile, not the worst case.
+
 **Worth prioritising if the plan is to process tens of GB**, where a
 39% saving is the difference between fitting on a given card and not.
 
@@ -1218,6 +1315,46 @@ production case) that switching to NESTED ordering would fix -- a
 bigger, separate change (touches every `pix = healpy.ang2pix(...)` call
 site and anything that assumes RING) that is not part of this item.
 
+**Done in part (2026-09-20): a NEST-ordered partition, without touching the
+stored pixel indices.** Nothing above needed the `ang2pix` call sites to
+change: `pixel_partition.assign_pixels` now orders the pixels by
+`healpy.ring2nest` before cutting them into one contiguous slice per rank
+(`--partition-order nest`, the default; `ring` restores the old behaviour),
+and the stored indices stay RING. Measured on the full DR1 set (428,403
+forests), the forests a GPU holds for the worst slice (its own plus the
+neighbour buffer):
+
+| slices | RING (old) | NEST | change |
+|---|---|---|---|
+| 2 | 286,854 = 248,877 + 37,977 | 309,527 = 238,866 + 70,661 | +8% (worse) |
+| 4 | 243,389 = 135,562 + 107,827 | 188,087 = 121,998 + 66,089 | -23% |
+| 8 | 197,941 = 77,689 + 120,252 | 116,952 = 67,598 + 49,354 | -41% |
+| 16 | 174,912 = 40,532 + 134,380 | 68,053 = 23,799 + 44,254 | -61% |
+
+NEST is only worse for 2 slices: a single latitude cut has almost no
+boundary, whereas NEST's compact regions have some, so use
+`--partition-order ring` there. The number of data files a slice touches did
+**not** improve (still 57-60 of 60), because the extraction groups files by
+shared delta-file pixels and not by NEST order: fixing that would mean
+grouping the extraction the same way.
+
+*Correlation:* every pixel is still processed by exactly one rank and its
+histogram does not depend on which other pixels share the rank, so the
+result does not change (small set, 2 ranks: 9.7e-6 NEST and 6.0e-6 RING
+against the previous results, float32 noise).
+
+*Distortion: the result does depend on the order.* `distortion_per_pixel`
+keeps a random `1 - excluded` share of each forest's neighbours, drawing from
+one module-level `random.seed(1)` stream in the order the pixels are
+processed, so a different pixel order (NEST instead of RING) or a different
+number of ranks is a different random subsample. Small set, 1 rank: with
+`--partition-order ring` the distortion reproduces the previous one to 1.7e-6;
+with NEST the largest element differs by 4% but the mean by 0.09%, i.e.
+subsampling noise, not an error. (This was already true when changing the
+number of ranks.) Seeding the shuffle per forest (e.g. `random.Random(forest.name)`)
+would make the distortion independent of the partition; not done here because
+it changes the numbers of every existing run.
+
 ## 16. `number_of_neighs` should be derived from the data, not a config guess
 
 Tracked as GitHub issue #1 ("number_of_neighs causes an error"), open
@@ -1231,6 +1368,19 @@ holds. `distortion_per_pixel()` computes the *real* per-forest count from
 buffers sized from the config value — already flagged as a silent
 out-of-bounds write in #9c, with mitigation options (assert, debug-mode
 bounds checking, `compute-sanitizer`) listed in #12.
+
+**Partial fix (the neighbour cap):** `distortion_per_pixel` now never keeps
+more than `number_of_neighs` neighbours for a forest, so the kernels
+cannot index past the buffers, and `distortion.py` reports at the end how
+many forests were capped. This turns silent corruption into a (usually
+tiny) statistical change and a visible count, but it does not derive
+`number_of_neighs` from the data. Measured on the full DR1 set (428,403
+forests, `angmax` 3.24 deg): a forest has up to 1,726 neighbours (p99
+1,113, mean 687), so at `--excluded 0.95` it keeps up to 87 (p99.9 64,
+mean 34): **the default `number_of_neighs=80` is exceeded by the densest
+forests**; `0.98` keeps at most 35, `0.985` 26, `0.99` 18. The full-set
+run at `--excluded 0.98`, `number_of_neighs=35` capped 0 of 428,403
+forests.
 
 This item is the fix `#9c`/`#12` point at but don't commit to: **don't
 make `number_of_neighs` a better-documented config guess, stop it being
@@ -1348,6 +1498,38 @@ by it for multi-node with one rank per GPU) and fail with a message
 naming both numbers, instead of leaving a silent mismatch to surface as
 either a CUDA error several layers down or, worse, no error at all.
 
+**Done (2026-09-21, branch `fix/gpu-per-node-check`)**, the `Split_type`
+version, not only the validation. New `mpi_devices.py`, used by
+`two_point.py` (only with `--gpu`) and `distortion.py`:
+
+- `number_of_cuda_devices` is gone from `parameters.yml`; a config that still
+  has it gets a warning that it is ignored. `cuda_device_first_number` stays
+  (it is a choice, not a machine fact).
+- A rank's device is `cuda_device_first_number` + its rank *within its node*
+  (`Split_type(COMM_TYPE_SHARED)`), so multi-node jobs assign correctly
+  instead of `global rank % configured count`.
+- **The `-np` is checked against the machine**, which answers "can we check the
+  user typed the right number": every rank reports (host, ranks on its node,
+  GPUs it sees) and rank 0 compares them per node. Any mismatch is an
+  error on all ranks naming the node and both numbers: more ranks than GPUs
+  would silently run several ranks on one GPU, fewer leaves GPUs idle (leave
+  some out deliberately with `cuda_device_first_number`). What it cannot
+  know is the number of nodes: `-np 4` on a 2-node job with 4 GPUs each
+  places 2 ranks per node and is stopped, but a job that puts the
+  wrong number of ranks on every node evenly is only caught by the per-node
+  count.
+- If `CUDA_VISIBLE_DEVICES` is set and each rank sees exactly one GPU (a
+  scheduler binding one GPU per task) the check is skipped and device 0 is
+  used.
+- Found on the way: `distortion.py` imported `distortion_procedures_pycuda` at
+  module level, which creates the CUDA context on import, *before* `main()`
+  set `CUDA_DEVICE`; the device assignment there never took effect. The import
+  is now inside `main()`, after the assignment.
+
+**Not done here:** 3pla still reads `number_of_cuda_devices` in its own
+`3pla.py` and needs to call `mpi_devices.assign_gpu` when it moves to this
+version.
+
 **Depends on:** nothing structural; the validation-only version is a
 small, independent, low-risk change and could be done first.
 
@@ -1423,3 +1605,527 @@ one process.
    lifetime/cleanup, race conditions between ranks). Do it last, on a
    stable base, and test carefully on a real multi-GPU node before
    trusting results from it.
+
+## 19. Full-DR1 correlation: 12.0 h, 66% compute (GPU-bound) + 34% file loading
+
+Measured 2026-09-19 on the full DESI DR1 set (428,403 forests, 60
+chunks, GTX 970, float32, `--chunks 60`, started 2026-09-19 00:05).
+
+- **The earlier ~3 h estimate was 3.5x too low.** It was extrapolated
+  from one small chunk at the sky edge (chunk 1: 3,292 owned forests,
+  ~18 ms per owned forest). At 07:28 the real run was on chunk 40 of 60
+  with 2,501 of 3,646 pixels done after 7 h 22 min (~340 pixels/h,
+  ~11 min per chunk), i.e. **~10.8 h in total**. Mid-sky chunks are
+  larger (median 6,930 owned forests, max 11,947) and denser, and the
+  cost per pixel grows with the number of neighbours.
+- **It is GPU-bound during compute.** `nvidia-smi` sampled every second
+  for 40 s during a compute phase: 94–98% utilisation. (A single earlier
+  sample read 3%, which was a chunk's file loading.)
+- **`forest.neighborhood()` is not the bottleneck.** Timed on the CPU
+  over 300 forests: ~0.57 us per candidate forest, ~2,851 candidates per
+  forest on average over the full set, so ~2 ms per forest, **~0.2 h of
+  ~10.8 h (about 2%)**. (An earlier guess that it was the bottleneck was
+  wrong. A scipy `cKDTree` could still do the neighbour counting for all
+  forests in about a minute, but there is little to gain.)
+- **Result of the full run: 43,278 s = 12.0 h**, exit 0, 3,646 pixels.
+  `Time by phase`: load 14,544 s (34%), upload 111 s, compute 28,591 s
+  (66%), save 19 s. The sum of the phases (43,265 s) matches the wall
+  time, so nothing large is unaccounted for.
+- **File loading is a third of the run, three times my earlier
+  estimate.** 14,544 s over the 3,397 file loads the plan needs is
+  4.28 s per file, not the 1.07 s measured on one small chunk (chunk 1);
+  bigger chunks read more files and the disk (~51 MB/s) is slow. (A
+  first version of this note said "a tenth of the run": wrong.) So
+  **ditching `data.npy` (#4) removes ~4 h of the 12 h correlation**, plus
+  the ~7 min extraction, and does not touch the GPU time. Spatially
+  compact chunks (NEST order, #15) would also cut the loads, but skipping
+  the round-trip removes them entirely.
+- **Compute is 66%: ~7.9 h.** Of that, the neighbour search is ~0.2 h
+  (measured above), so the GPU kernels and launch overhead are ~7.7 h.
+
+**What to try, in the order I would look at it** (none of these is
+measured yet; the first step is a profile with `nvprof`/`nsys`, or
+`--verbose` timing per kernel, on one dense chunk):
+
+- **Atomic contention on the histograms.** `pair_correlation` accumulates
+  every pixel pair into 2500 bins with `atomicAdd`; many threads hit the
+  same few bins. Per-block shared-memory histograms merged at the end is
+  the standard fix, and is the most likely large win. (On float64 this is
+  worse: pre-Pascal cards cannot do it at all, see #7.)
+- **One kernel launch and three small `to_gpu` copies per first forest**
+  (`two_point_per_pixel`), with `context.synchronize()` after each. For
+  small forests the launch overhead and the sync gaps can dominate;
+  batching several first forests per launch would amortise it.
+- **Coarser or fewer bins** cut the work directly (bins scale the
+  histogram, not the pair count, so this mostly helps the distortion),
+  and a **faster GPU** helps everything: the GTX 970 is a 2014 card.
+- **Padding (#13)** matters less here than in the distortion, because the
+  correlation kernel already takes each neighbour's real length.
+
+## 20. Streaming GPU upload (host RAM independent of the slice)
+
+**The problem.** With several ranks on one node (one per GPU), each rank
+first loaded every forest of its slice (owned pixels plus the neighbour
+buffer) into host memory, packed them into flat host arrays as large as the
+GPU buffers, and only then uploaded. Measured on the full DESI DR1 set
+(428,403 forests), for slices of 40k and 70k forests: ~32 KB of resident
+memory per forest after loading and ~55-58 KB per forest at the upload
+peak. Extrapolated to the worst 4-GPU slice (243,389 forests): ~8.6 GB
+resident and ~14-15 GB peak **per rank**, i.e. 57-60 GB for four ranks.
+
+**The change (`src/lya2pcf/streaming_upload.py`, `pixel_partition.py`).**
+- `data_index.npy` now also holds `pixel_count` (forests per pixel) and
+  `max_lenght`, written by `lya2pcf-extract`/`-eboss`. For data extracted
+  before that, `lya2pcf-index-stats --data-dir DIR` (or
+  `python -m lya2pcf.pixel_partition`) adds them by reading each
+  `data*.npy` once (2 min 13 s for the 14 GB DR1 set).
+- `pixel_partition.plan_rank_data` gives every forest of a rank its GPU slot
+  (pixels in increasing order, forests in file order) from the index alone,
+  before any data file is read. The GPU buffers are allocated once, at their
+  final size, after the same memory check as before.
+- `pixel_partition.iter_plan_files` loads the `data*.npy` files one at a
+  time; `stream_forests_to_gpu` packs one pixel's forests into a small
+  block, copies it to its offset in the GPU buffers, and then drops each
+  forest's per-pixel arrays. The host keeps only what the loops still use:
+  `x, y, z, ra, name` (`neighborhood`), `index`, and a new `num_points`
+  (the number of valid pixels). Note `forest.lenght` is *not* that: it is the
+  unmasked number of wavelengths (2716 for DR1), so `len(forest.dc)` could not
+  simply become `forest.lenght`.
+- `two_point.py` and `distortion.py` use it on the GPU path
+  (`init(plan, ...)`); the `--cpu` path keeps the old loader, since it needs
+  every array. **The in-memory GPU path is gone**: `upload_forests(data,
+  pixel_list)` and `init(data, ...)` no longer exist in the two pycuda modules,
+  which keeps a single implementation of the buffer packing. `upload_forests`
+  now takes a `ForestPlan` and returns the buffers plus the light forest dict
+  (`ForestBuffers.data`). This is a breaking change for any caller that passed
+  an in-memory `data` dict: 3pla calls `upload_forests(data, pixel_list)`
+  (pinned to `v0.3.0`, so unaffected until it moves), see its
+  `IMPROVEMENTS.md`.
+
+**Measured (full DR1 data, GTX 970, float32, worst 120/240-chunk slices;
+peak host RAM, `VmHWM`):**
+
+| | old loader | streaming |
+|---|---|---|
+| correlation, 70,536 forests | 4.67 GB | **0.67 GB** |
+| distortion, 40,211 forests | 3.15 GB | **0.63 GB** |
+
+Streaming is flat between the two slice sizes, as it should be (peak ≈ one
+data file plus the light metadata), so the 243k-forest slice should also be
+under ~1 GB instead of ~14-15 GB. Not measured at that size: it does not fit
+on this GPU. Initialisation took 77-90 s for these slices (cold disk cache;
+the old loader spent 100-220 s loading in the earlier measurement).
+
+**Checked.** Small set (1,446 forests, 4 files): 1 rank, and `mpirun -np 2`,
+match the previous results to 6e-6 - 9e-6 (histograms) and 1.7e-6 (distortion),
+float32 noise. Full-data slices vs the old loader on the same pixels:
+correlation 1.1e-5 - 1.7e-5, distortion 3.6e-6 - 8.2e-6; and vs the 12-hour
+full run 1.5e-5 - 2.3e-5. The kernel's `Error in cos12` message (float32
+rounding of `cos12` slightly above 1 for nearly parallel forests) appears in
+both paths, and 196,608 times in the earlier full run.
+
+**Not done / caveats.** `delta_reader_eboss.py`'s new index keys were not run
+(no eBOSS data here). The CPU path is unchanged. Only the neighbour-search
+part of a forest stays on the host; if a future change needs another
+per-pixel field on the host, it has to be added to `stream_forests_to_gpu`'s
+kept fields. No multi-node run: RAM per rank is measured, not the 4-GPU run.
+
+## 21. `pair_correlation`: shared-memory histogram + coalesced loop order
+
+**#19** measured that the full-DR1 correlation is ~66% GPU-bound (~7.7 h of
+the 12.0 h run, after subtracting the neighbour search) and guessed at two
+causes without measuring either: atomic contention on the 2500-bin histogram,
+and per-forest launch overhead. This item profiles `pair_correlation` first
+(as #19 said to), finds the real bottleneck is neither of those exactly, and
+fixes it.
+
+**Setup.** Small test set (1,446 forests, 16 pixels, `max_lenght` 967 — the
+same set #20's "Checked" section uses, just packed into 1 file here instead
+of 4), default binning (`rmax` 200, `bin_size_r` 4 → 50x50 = 2500 bins),
+`gpu_precision: float32` (forced: a GTX 970 is Maxwell, compute capability
+5.2, and atomicAdd on double needs 6.0+, see #7). Profiled with `nvprof`
+(CUDA 10.1) two ways: `nvprof lya2pcf-correlate --gpu` for the aggregate
+kernel-time summary, and a standalone script that replays a single, isolated
+`pair_correlation` launch for `nvprof --metrics` (profiling the whole run
+with `--metrics` replays *every one* of the 1,443 launches per metric, which
+does not finish in reasonable time — confirmed by killing it after several
+minutes with nothing written yet). The isolated launch picked is the
+single largest by `forest1_lenght x sum(neighbour pixel counts)`: forest1 of
+892 pixels, 484 neighbours, ~254M pixel-pairs.
+
+**Baseline profile (original kernel, global atomics only).**
+
+| | value |
+|---|---|
+| Aggregate kernel time, 1,443 launches | 23.05 s (99.97% of all GPU activity) |
+| Avg / min / max per launch | 15.98 ms / 241 us / 51.9 ms |
+| `achieved_occupancy` (largest launch) | 49.6% |
+| `atomic_transactions` (largest launch) | 56,394,777 |
+| `gld_efficiency` | **14.6%** |
+| `gst_efficiency` | 0.0% (every write is an atomic, not a plain store) |
+| `warp_execution_efficiency` | 44.5% |
+| `stall_memory_dependency` (issue-stall reason) | **79.0%** |
+| `gld_throughput` | 279.8 GB/s |
+| `l2_atomic_throughput` | 62.1 GB/s |
+
+So the kernel is memory/atomic-bound (79% of issue stalls are waiting on a
+data request), and the occupancy ceiling is not atomics or shared memory —
+it's registers: `pair_correlation` uses 36 registers/thread, and the block is
+1024 threads (`(1, 32, 32)`, see `2d_threads_per_block`), so one block needs
+36,864 registers against the GTX 970's 65,536/SM — only one block fits per
+SM, capping occupancy at 1024/2048 = 50%, matching the measured 49.6%
+exactly. Shared memory was unused (0%), confirming #19's "atomic
+contention" guess was at least half right (the atomics are real) but
+incomplete: `gld_efficiency` of 14.6% says the *reads* (`dc`/`we`/`dw`/
+`rx`/`ry`/`rz`) are badly uncoalesced, which the atomics-only theory did not
+predict.
+
+**Why the reads are uncoalesced — the "sparse access" this item's data
+reordering targets.** CUDA packs a warp's 32 threads by `threadIdx.x`
+fastest, then `.y`, then `.z`. `pair_correlation` forces `blockDim.x = 1`
+(x carries the pixel-in-forest1 index via `blockIdx.x` instead, see
+`two_point_per_pixel`'s comment), so a warp is 32 consecutive `threadIdx.y`
+values at one fixed `threadIdx.z`. The original kernel used `y` for `j`
+(the neighbour index) and `z` for `k` (the pixel index *within* that
+neighbour): so a warp's 32 threads were 32 **different neighbours** at the
+*same* `k` — 32 unrelated forests, each `dc[indice2*max_lenght + k]` read at
+a wildly different address, none of them adjacent. That is the "sparse"
+memory-access pattern: not a host-side ordering of the forests
+themselves (they're already stored contiguously per forest, and each
+forest's own pixels are already monotonic in wavelength/`dc`), but which
+*dimension a warp strides over* in a kernel that reads two forests'
+worth of per-pixel arrays at once. Swapping the roles — `y` now drives `k`
+(within-forest, contiguous in the `gran_*` buffers), `z` now drives `j`
+(the actual gather across forests) — puts the coalesced dimension on the
+warp-fast axis: a warp now shares one neighbour and reads 32 consecutive
+`k`. This changes nothing about which `(j, k)` pairs get summed (both
+loops still cover the same full range, `blockDim.y == blockDim.z == 32`
+either way), only which physical thread computes which pair, so it is a
+free, correctness-preserving change.
+
+**The fix, in `cuda_kernels.cpp`'s `pair_correlation` (both changes
+together):**
+1. The `y`/`z` swap above.
+2. A per-block histogram in dynamic shared memory (`w_hist`/`dw_hist`,
+   `2 * numpix_rp * numpix_rt * sizeof(myfloat)` bytes, sized at launch from
+   `shape_hist` — 20,000 B at the default binning and float32, comfortably
+   under the GTX 970's 49,152 B/block limit even at float64). Every thread
+   zeroes its share of it, accumulates the block's own pixel-pairs into it
+   with `atomicAdd` instead of the global histogram, then after a
+   `__syncthreads()` the block flushes only the bins it actually touched
+   (`if (sh_w[b] != 0) atomicAdd(&w_hist[b], sh_w[b])`) to global memory —
+   one atomic per touched bin per block, instead of one atomic per
+   pixel-pair. `correlation_procedures_pycuda.py` computes and validates
+   this size once in `init()` (raises a clear error, in the same style as
+   `gpu_support`'s existing memory checks, if a future coarser binning
+   would not fit in the device's shared memory) and passes it as `shared=`
+   on every launch.
+
+**After profile (same launch, same test set):**
+
+| metric | before | after | change |
+|---|---:|---:|---:|
+| Aggregate kernel time, 1,443 launches | 23.05 s | **17.70 s** | **-23.2%** |
+| Avg per launch | 15.98 ms | 12.26 ms | -23.2% |
+| `achieved_occupancy` | 49.6% | 50.0% | unchanged (still register-bound, as expected — shared memory never became the limiter) |
+| `atomic_transactions` | 56,394,777 | **555,946** | **-99.0%** (101x fewer) |
+| `gld_efficiency` | 14.6% | **78.6%** | 5.4x |
+| `warp_execution_efficiency` | 44.5% | 76.4% | 1.7x |
+| `stall_memory_dependency` | 79.0% | **16.9%** | 4.7x less |
+| `l2_atomic_throughput` | 62.1 GB/s | 1.1 GB/s | -98% (expected: 101x fewer atomics reach L2) |
+
+23% less kernel time is a real but smaller win than the ~100x drop in atomic
+traffic and stall reasons would suggest, because occupancy (the actual
+ceiling on how much of that freed-up capacity can be used) did not move —
+it is still capped at 50% by register pressure, unrelated to this change.
+Raising it further needs fewer registers/thread or a smaller block, not
+listed here as a separate follow-up since it changes the same kernel this
+item just touched.
+
+**An unplanned second effect: this also fixes a real accuracy problem.**
+Comparing the two kernels' full-pipeline output (16 pixels) against a
+float64 reference (every one of the 1,443 launches' own small histogram
+pulled to host and summed in float64, so no single launch's atomics ever
+hit an already-large accumulator):
+
+| | total `w_hist`, relative to float64 reference | mean / max per-bin relative error |
+|---|---:|---:|
+| Original kernel (global atomics) | 2.04e-3 off | 1.79e-3 / 3.44e-3 |
+| This item's kernel (shared mem) | 4.29e-6 off | 4.09e-6 / 1.25e-5 (float32-noise floor) |
+
+This is not a coincidence and not something to treat as a regression risk:
+it is #7's own documented float32 caveat ("accumulates the histograms in
+single precision, which loses accuracy as the bin sums grow") showing up
+concretely. The original kernel does one `atomicAdd` per pixel-pair
+straight into the *same, persistently growing* global bin (one pixel's
+`w_hist_d`/`dw_hist_d` buffer accumulates every one of that pixel's
+forest1's separately, over many kernel launches); once a bin's running
+total passes float32's ~7-digit precision, small further increments start
+rounding away. This kernel's shared-memory version resets to zero every
+block and only ever sends ~2,500 already-summed values to the global
+buffer per block, so almost every individual add stays small relative to
+its (shared-memory) accumulator. Production runs use `gpu_precision:
+float64` (only float32 was available to test on this GPU), where this
+effect should be much smaller to start with, but it should still reduce
+it further at whatever precision.
+
+**Checked.** Single isolated largest launch (892 x 484, ~254M pairs, fresh
+zeroed histogram, no persistent-buffer effect either way): `w_hist` sums
+identical to displayed float32 precision between the two kernels
+(2.9061336e7), `dw_hist` sums differ by 1.8e-6 relative — ordinary
+float32 reordering noise, not the persistent-accumulator effect above.
+Full pipeline (16 pixels) accuracy vs. the float64 reference: see the table
+above.
+
+**Not done / caveats.** Not run on the full DR1 set or at `gpu_precision:
+float64` (no Pascal+ GPU available here — see #7); the accuracy numbers
+above are float32-only and the persistent-accumulator effect should be
+smaller, not larger, at float64. Occupancy is still register-capped at
+50%; not addressed here. The same `y`/`z` and shared-memory pattern likely
+applies to the distortion kernels (`compute_etas`, `compute_d`, also
+atomic-heavy), not touched in this item. Not yet merged to `main`.
+
+## 22. Distortion kernels profiled: `compute_d` is 87% of GPU time
+
+Follow-up to #21's note that the distortion kernels are "also atomic-heavy" —
+profiled the same way (small test set, `nvprof`, plus the isolated-launch
+technique from #21 since profiling the whole run with `--metrics` is too
+slow). Options 1 and 2 below are **implemented, 2026-09-22** — see
+"Implemented" at the end of this item. Option 3 is not.
+
+**Setup caveat.** The default binning's distortion buffers need ~4.6 GB
+(`etas12/21/13/31` scale as `bins x max_lenght x number_of_neighs`, see #13)
+and this GPU only has 3.95 GB total / 3.3 GB free — confirmed by the
+existing `require_memory` check refusing to run. Profiled with
+`number_of_neighs: 32` instead of the configured 80 (test-only; noted since
+it changes which forests get clamped, not the kernels' behaviour) and the
+default `--excluded 0.95` (95% of found neighbours randomly dropped before
+the kernels ever see them — this run's largest launch had 892 forest1
+pixels and 25 kept neighbours).
+
+**Aggregate kernel time, 1,443 launches (4 kernels each):**
+
+| kernel | time | share |
+|---|---:|---:|
+| `compute_d` | 68.40 s | **87.0%** |
+| `precompute_distances` | 5.12 s | 6.5% |
+| `compute_etas` | 5.03 s | 6.4% |
+| `order_active` | 0.013 s | 0.02% |
+
+`compute_d` alone is ~13x either of `precompute_distances`/`compute_etas`
+despite all three sharing the same grid/block shape
+(`distortion_threads_per_block`, 3D, no strided loops) — so the cost is in
+what `compute_d` does per thread, not in how much of the grid it covers.
+
+**`compute_d`'s largest launch, in detail (892 x 25, `nvprof --metrics`,
+compared with `precompute_distances`'s same launch as a same-shape,
+same-grid baseline):**
+
+| metric | `precompute_distances` | `compute_d` |
+|---|---:|---:|
+| `achieved_occupancy` | 64.4% | **28.8%** |
+| `atomic_transactions` | 0 | **141,371,146** |
+| `atomic_transactions_per_request` | — | 30.8 (worst case is 32) |
+| `gld_efficiency` | 27.3% | 34.1% |
+| `stall_memory_dependency` | 24.4% | **77.4%** |
+| `l2_atomic_throughput` | 0 | **117.4 GB/s** (near this GPU's ceiling) |
+| `inst_per_warp` | 122 | **446** |
+
+**Reading `compute_d`'s kernel body against these numbers.** For every
+`(i, j)` pixel-pair that lands in a valid bin `A`, the kernel does:
+```c
+k = 0;
+while(ActiveBs_index[f2*tot_pix + k] > -1 && k < tot_pix){
+    B = ActiveBs_index[f2*tot_pix + k];
+    atomicAdd(&d_hist[A*tot_pix + B], w12*(...eta terms...));
+    k++;
+}
+```
+`ActiveBs_index[f2*tot_pix : ...]` is `order_active`'s output: the list of
+bins `B` that turned out active for neighbour `f2`, terminated by a `-1`
+sentinel (`index_j[f2]` holds the real count, written but unused here). It
+is **identical for every `(i, j)` thread that shares the same `f2`** — and
+a block's `threadIdx.z` (hence `f2`) is constant across the whole block
+(`distortion_threads_per_block = [8, 32, 4]`, warps pack `x` then `y`
+fastest, so `z` never varies within a warp, matching `precompute_distances`'
+and `compute_etas`' own grid). Despite that, every one of the block's up to
+1,024 threads re-reads this same short list from **global memory**,
+independently, as a serial dependent chain (`inst_per_warp` 446 vs. 122 for
+`precompute_distances`'s identical-shaped grid confirms the extra
+per-thread work). Checked how long these lists actually are (`index_j` for
+launch 516's 25 neighbours): mostly 0, max 188, mean 29.8 out of
+`tot_pix` = 2500 — short, so the *loop* itself is not the problem; the
+**redundant global read of it, once per thread instead of once per
+block,** is. That directly explains the 77.4% memory-dependency stall and
+the ~30-atomics-per-request figure (each thread's chain of atomicAdds
+lands on addresses uncoordinated with its neighbours in the warp).
+
+The occupancy gap (28.8% vs. 64.4% for the same-shaped `precompute_distances`,
+both similarly register-bound at ~32 regs/thread) is a second, separate
+effect: the grid's `y` dimension is sized from `max_lenght` (967 here), not
+from each neighbour's real `size2`, so a big share of the ~24,000 launched
+blocks do no work at all once `j >= size2` — the GPU-cycle cost of #13's
+padding, not just the memory cost #13 already tracks.
+
+**Evaluated options, ranked by expected impact:**
+
+1. **Cache each block's `ActiveBs_index` slice(s) in shared memory, sized
+   from `index_j[f2]` (not the `-1` sentinel).** A block spans up to 4
+   distinct `f2` (`blockDim.z = 4`); cooperatively load each one's
+   `index_j[f2]`-long slice once (measured up to 188 entries here — a few
+   KB, nowhere near the 48 KB/block budget even for 4 at once, unlike
+   pair_correlation's histogram this does not need a size guard against
+   plausible configs). Every thread then loops over the shared copy instead
+   of hitting global memory independently. This is the direct analogue of
+   #21's fix and targets the clearest bottleneck (the 77.4% stall, the
+   inst_per_warp gap) without changing which `(i, j, B)` triples get
+   summed — same free, correctness-preserving shape as #21's `y`/`z` swap.
+   **Does not** by itself reduce the 141M atomic transactions into
+   `d_hist` — see #3 below for why that one is harder.
+2. **Size each launch's grid `y` off `max(neigh_sizes)` for that forest1's
+   actual kept neighbours, instead of the dataset-wide `max_lenght`.**
+   Free when a forest1's neighbours are shorter than the longest forest in
+   the dataset (very often), recovers some of the 28.8%-vs-64.4% occupancy
+   gap. Same padding root cause as #13, but a GPU-cycle fix rather than a
+   memory one, and independent of #13's own (buffer-layout) fix.
+3. **Reducing the `d_hist` atomic traffic itself, not just the redundant
+   read that feeds it, needs more investigation before committing to a
+   design.** pair_correlation's fix worked because one block owned one
+   fixed histogram target (`blockIdx.x` = a single `i`). Here every thread
+   has its *own* `(i, j)` and hence its own row `A` — a block's 8 (`i`) x
+   32 (`j`) threads can touch up to 256 different `A`s in principle, too
+   many to privatize in shared memory the same way. It may still be
+   possible: `i`/`j` are contiguous chunks over forests whose pixels are
+   already `dc`-monotonic, so a block's actual `A` range is plausibly
+   narrow — but that needs to be measured (not done here) before proposing
+   a specific shared-memory shape, unlike #1 above.
+4. **The `i`/warp-axis check #21 needed for `pair_correlation` does not
+   apply here.** `compute_d`'s `threadIdx.x` (warp-fast) already drives `i`,
+   which indexes the contiguous `indice1*max_lenght + i` offset — already
+   coalesced on that axis. The mediocre 34.1% `gld_efficiency` is more
+   likely explained by #2's padding and by `we[indice2j]` varying across a
+   warp's 4 distinct `j`-groups than by a wrong axis order.
+
+**Not done.** `compute_etas` (6.4%, also does its own `weight_B`/`eta*`
+atomics) was not profiled to the same depth as `compute_d`, since it is an
+order of magnitude cheaper and the priority list above does not depend on
+it. Not measured at the configured `number_of_neighs: 80` or at
+`gpu_precision: float64` (would not fit / would not compile on this GPU,
+see the setup caveat and #7).
+
+**Implemented (2026-09-22): options 1 and 2.** Both in
+`cuda_kernels.cpp`'s `compute_d` and `distortion_procedures_pycuda.py`,
+same branch as #21.
+
+- **#1.** `compute_d` now takes `index_j` (order_active's per-neighbour
+  active-bin count, computed already but previously unused by this
+  kernel) as a new argument. Each block cooperatively copies, once, the
+  `index_j[f2]`-long `ActiveBs_index` slice for each of the up to
+  `blockDim.z` distinct neighbours it covers into shared memory (sized
+  for the worst case, `distortion_threads_per_block[2] * numpix_rp *
+  numpix_rt * 4` bytes — 40,000 B at the default binning, comfortably
+  under this GPU's 49,152 B/block, checked once in `init()` the same way
+  as #21's histogram check, with a clear error if a coarser config
+  wouldn't fit); every thread's inner loop then reads from that shared
+  copy instead of independently re-reading `ActiveBs_index` from global
+  memory, and is bounded by `index_j[f2]` directly instead of scanning
+  for the `-1` sentinel (mathematically the same bound, since
+  `order_active` writes exactly `index_j[f2]` entries contiguously
+  before the untouched `-1`-filled tail — same set of `(i, j, B)` triples
+  summed, same order, just a cheaper read).
+- **#2.** `total_blocks_y` (shared by `precompute_distances`,
+  `compute_etas`, `compute_d`) is now `ceil(neigh_sizes.max() /
+  distortion_threads_per_block[1])` instead of `ceil(max_lenght / ...)`.
+
+**Measured (same setup as above — small test set, `number_of_neighs: 32`,
+`--excluded 0.95`, launch 516 for the per-launch metrics):**
+
+| | before | after |
+|---|---:|---:|
+| `compute_d` aggregate time, 1,443 launches | 68.40 s | **64.08 s (-6.3%)** |
+| All 4 distortion kernels, aggregate | 78.57 s | 74.03 s (-5.8%) |
+| Full `lya2pcf-distort` wall time | 86.4 s | 82.3 s (-4.7%) |
+| `stall_memory_dependency` (launch 516) | 77.4% | **57.0%** |
+| `achieved_occupancy` | 28.8% | 31.1% |
+| `gld_efficiency` | 34.1% | 35.1% |
+| `shared_efficiency` | 0.0% | 4.7% |
+| `atomic_transactions` | 141,371,146 | **141,371,146 (unchanged)** |
+
+The stall reason this item targeted moved a lot (-26% relative); wall time
+moved much less, because — exactly as flagged for option 3 — the atomic
+traffic into `d_hist` itself is untouched (same count, same
+`l2_atomic_throughput` ballpark) and is now a *larger* share of what
+stalling remains. Option 3 (privatizing some of that atomic traffic) is
+still not attempted; the gap between the stall-reason improvement and the
+wall-time improvement here is itself evidence for prioritising it next,
+more directly than the original profiling was.
+
+**Checked.** Full `lya2pcf-distort` run (16 pixels), original kernel vs.
+this item's, same small test set: of `distortion.npy`'s 6,250,000 cells,
+5,434,017 (87%) are bit-identical; the rest differ by a mean relative
+2.9e-6 (nonzero-denominator cells) and a max absolute 2.4e-6 — ordinary
+float32 reordering noise (some cells' large relative differences are the
+usual near-zero-denominator artefact, see #21's `dw_hist` note), not a
+correctness regression. Total sum matches to 5e-8 relative
+(215.490297... vs. 215.490308...). Expected: #1 does not reorder any
+`atomicAdd` into `d_hist` (same per-thread sequence, same source values,
+only where `B` is read from changed), and #2 only removes wholly-idle
+blocks, so this is close to the best-case outcome for a change in this
+family — not run against a float64 build (no Pascal+ GPU here, see #7).
+
+## 23. `pair_correlation`: `__launch_bounds__(1024, 2)` to reach 100% occupancy
+
+**Branch `experiment/pair-correlation-launch-bounds`** (worktree
+`lya2pcf-launch-bounds`, off `main` at `92bfd82`, which already has #21/#22).
+Follow-up to #21: after the shared-memory fix, `pair_correlation` is 37
+registers/thread at `blockDim=1024`, which floors
+`65536 regs/SM / (37 * 1024) = 1` block/SM — 50% occupancy — while shared
+memory alone would allow 2 blocks/SM (`49152 / 20000B`, float32). Registers
+are the sole binding constraint, and the arithmetic is a hard threshold, not
+a gradual one: `65536 / (1024 * regs)` only crosses from 1 to 2 at
+**exactly 32 registers/thread or fewer** (33 still floors to 1). Given #21
+already dropped `stall_memory_dependency` from 79.0% to a much lower figure,
+there's genuine headroom now for more concurrent warps to help — unlike
+before #21, when atomic contention so dominated that occupancy probably
+wouldn't have mattered.
+
+Tried the standard low-effort lever before touching the kernel body: added
+`__launch_bounds__(1024, 2)` to the kernel signature, which tells `nvcc` to
+cap register allocation at `65536 / (1024*2) = 32`/thread, spilling to local
+memory if it can't fit. One-line change, easily reverted.
+
+**Result: nvcc hit the target exactly**, no rewrite needed.
+
+| | main (#21/#22) | `__launch_bounds__(1024, 2)` |
+|---|---|---|
+| registers/thread | 37 | **32** |
+| local memory (spill) | 0 B | 8 B/thread |
+| blocks/SM (by registers) | 1 | **2** |
+| theoretical occupancy | 50% | **100%** |
+
+**Checked against real data** (209 pixels, 21,150 forests, DESI-extracted,
+`max_lenght` 967, `rmax` 40, `gpu_precision: float32`; one warm-up launch
+excluded from timing):
+
+| | main | `__launch_bounds__(1024, 2)` | |
+|---|---|---|---|
+| 40 pixels | 5.137 s | 3.573 s | 1.44x |
+| 209 pixels (full set) | 29.670 s | 20.463 s | **1.45x** |
+
+Consistent ~31% wall-clock reduction at both sizes — not the ~2x a naive
+doubling-of-occupancy might suggest, presumably because occupancy was only
+*one* of several remaining bottlenecks (global memory bandwidth for the
+final per-bin histogram reduction doesn't change), but a real, reproducible
+win for a one-line change with negligible spill.
+
+**Correctness.** `w_hist`/`dw_hist` sums, 209 pixels: main
+`5439691366.659180` / `1175675.243091` vs. launch_bounds
+`5439691345.815430` / `1175675.258195` — relative differences of 3.8e-9 and
+1.3e-8, ordinary float32 accumulation-order noise (same class as #21's), not
+a regression.
+
+**Status: measured, not yet merged.** Left on its own experimental branch
+pending a decision on whether to merge — the win is real and cheap, so this
+is a good candidate, but see #21/#22 for how often a plausible-looking
+occupancy lever in this codebase turned out not to be free (register
+spill's cost here is small, 8 B/thread, but wasn't zero).

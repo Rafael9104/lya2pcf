@@ -91,13 +91,15 @@ distortion_threads_per_block: [8, 32, 4]
 
 # Block size for kernels whose real work is two-dimensional: shared by
 # order_active in the distortion path (indexes histogram bin x
-# neighbour) and by pair_correlation's y/z (indexes neighbour x pixel
-# within that neighbour). pair_correlation also needs an x dimension,
-# but that one is kernel-specific (its value must stay 1, or the kernel
-# double-counts) and hardcoded in correlation_procedures_pycuda.py
-# rather than carried here. CUDA block dimensions are always 3D at the
-# driver level (pycuda's block= rejects anything but a 3-tuple), so each
-# caller appends whatever extra dimension it needs itself.
+# neighbour) and by pair_correlation's y/z (indexes pixel within a
+# neighbour x neighbour -- y is deliberately the coalesced-access one,
+# see cuda_kernels.cpp's pair_correlation and IMPROVEMENTS.md #21).
+# pair_correlation also needs an x dimension, but that one is
+# kernel-specific (its value must stay 1, or the kernel double-counts)
+# and hardcoded in correlation_procedures_pycuda.py rather than carried
+# here. CUDA block dimensions are always 3D at the driver level
+# (pycuda's block= rejects anything but a 3-tuple), so each caller
+# appends whatever extra dimension it needs itself.
 2d_threads_per_block: [32, 32]
 max_threads: 1024
 
@@ -111,6 +113,8 @@ number_of_neighs: 80
 # bins. Uncomment to force a number from 0 to 5, e.g. 0 to use global memory only.
 # shared_histograms: 4
 
-# If using a machine with several cuda devices
-number_of_cuda_devices: 4
+# GPUs per node are detected, not configured: run mpirun with
+# -np <number of nodes> x <GPUs per node>. The run stops if a node has a
+# different number of ranks than GPUs.
+# Index of the first GPU to use on each node, to leave the first ones free.
 cuda_device_first_number: 0

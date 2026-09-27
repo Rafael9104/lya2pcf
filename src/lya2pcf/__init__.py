@@ -15,6 +15,9 @@ Public API for building other correlation code on top of lya2pcf's forests
 - `lya2pcf.gpu_support.compile_kernels` and the device checks in the same
   module, and `lya2pcf.correlation_procedures_pycuda.upload_forests` for
   the reusable GPU-side pieces — import those submodules explicitly.
+  `upload_forests` takes a `lya2pcf.pixel_partition.ForestPlan` (see
+  `plan_rank_data`), not an in-memory dict: the forests are streamed to the
+  GPU one data file at a time.
 """
 from . import parameters
 from . import cosmology

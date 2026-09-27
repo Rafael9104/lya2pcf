@@ -33,6 +33,7 @@ lya2pcf-extract-eboss = "lya2pcf.delta_reader_eboss:main"
 lya2pcf-correlate = "lya2pcf.two_point:main"
 lya2pcf-distort = "lya2pcf.distortion:main"
 lya2pcf-post = "lya2pcf.post_processing:main"
+lya2pcf-index-stats = "lya2pcf.pixel_partition:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]

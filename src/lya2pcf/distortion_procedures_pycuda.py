@@ -8,6 +8,7 @@ import pycuda.gpuarray as gpuarray
 
 from . import parameters as params
 from . import gpu_support
+from . import streaming_upload
 
 random.seed(1)
 mod = gpu_support.compile_kernels()
@@ -16,19 +17,24 @@ compute_etas = mod.get_function("compute_etas")
 compute_d = mod.get_function("compute_d")
 order_active = mod.get_function("order_active")
 
-def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_list = None):
-    """ This function copies all the data from the forests to the GPU to reduce the overhead
-    of copying it at every call. Might need to be more selective with larger datasets.
+# Forests whose kept neighbours were capped at params.number_of_neighs, and
+# forests seen, over the whole run (reported at the end by distortion.py).
+clamped_forests = 0
+forests_seen = 0
+
+
+def init(plan, log_file_aux, shape_hist_aux, angmax_aux, reject_aux):
+    """ Copies the forests of `plan` to the GPU once, to avoid the overhead of copying
+    them at every call, and allocates the distortion's scratch buffers.
     Parammeters:
-    data        dict
-                Dictionary of healpix pixels to list of forests
+    plan        pixel_partition.ForestPlan
+                The rank's own pixels plus their neighbour buffer. The data*.npy files are
+                read one at a time and copied pixel by pixel, never all held in host memory
+                (streaming_upload.py); each forest's per-pixel arrays are dropped once
+                uploaded.
 
-    pixel_list  list
-                Optional list with the pixels to be uploaded. If not present, the entire
-                dataset is uploaded, careful should be taken when changing this option the gpu needs more data than
-                the pixels that it is computing, it also needs the neigboring pixels.
-
-    Returns a dictionary from names of forests to positions in the forest array
+    Returns the {pixel: [forests]} dict distortion_per_pixel works from, with the
+    per-pixel arrays already dropped.
     """
     global data
     global log_file
@@ -54,7 +60,6 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     global total_bins
     global max_lenght
 
-    data = data_aux
     log_file = log_file_aux
     shape_hist = shape_hist_aux
     angmax = angmax_aux
@@ -62,28 +67,14 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
 
     total_bins = np.prod(shape_hist)
 
-    if not pixel_list:
-        pixel_list = list(data.keys())
-
-    # max_lenght is a property of whichever data is actually loaded, not a
-    # static parameter, so it's computed here rather than read from parameters.
-    count_forests = 0
-    max_lenght = 0
-    for pixel_aux in pixel_list:
-        for forest in data[pixel_aux]:
-            count_forests += 1
-            forest_lenght = len(forest.we)
-            if forest_lenght > max_lenght:
-                max_lenght = forest_lenght
+    count_forests = plan.count_forests
     # The kernels take this as an int argument, which pycuda can only marshal
     # from a fixed-width type, not a plain Python int.
-    max_lenght = np.int32(max_lenght)
+    max_lenght = np.int32(plan.max_lenght)
 
-    # Checked before the host arrays are built, not just before the uploads:
-    # the forest buffers are the same size on both sides, so on a large
-    # dataset allocating and filling them first would exhaust host memory
-    # before the GPU was ever asked for anything. int() guards against the
-    # int32 max_lenght overflowing these products.
+    # Checked before anything is allocated, so a slice that does not fit is
+    # reported as a whole rather than as whichever allocation happened to fail.
+    # int() guards against the int32 max_lenght overflowing these products.
     itemsize = np.dtype(params.gpu_dtype).itemsize
     ml, neighs, bins = int(max_lenght), params.number_of_neighs, int(total_bins)
     forest_bytes = count_forests * ml * itemsize
@@ -105,66 +96,14 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
          "lower 'number_of_neighs' in parameters.yml, which scales most buffers",
          "use coarser binning (larger bin_size_r, or smaller rmax)"])
 
-    gran_dc = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_rx = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_ry = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_rz = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_we = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_dw = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_x = np.zeros(count_forests, dtype = params.gpu_dtype)
-    gran_y = np.zeros(count_forests, dtype = params.gpu_dtype)
-    gran_z = np.zeros(count_forests, dtype = params.gpu_dtype)
-    gran_odl2 = np.zeros(count_forests, dtype = params.gpu_dtype)
-    gran_dl = np.zeros((count_forests * max_lenght), dtype = params.gpu_dtype)
-    gran_omega = np.zeros(count_forests, dtype = params.gpu_dtype)
     weight_B = np.zeros(total_bins, dtype = params.gpu_dtype)
-    count = int(0)
-    for pixel in pixel_list:
-        for forest in data[pixel]:
-            len_forest = len(forest.we)
-            # lambdaforest.
-            gran_dc[count * max_lenght : count * max_lenght + len_forest] = forest.dc
-            gran_rx[count * max_lenght : count * max_lenght + len_forest] = forest.rx
-            gran_ry[count * max_lenght : count * max_lenght + len_forest] = forest.ry
-            gran_rz[count * max_lenght : count * max_lenght + len_forest] = forest.rz
-            gran_we[count * max_lenght : count * max_lenght + len_forest] = forest.we
-            gran_dw[count * max_lenght : count * max_lenght + len_forest] = forest.dw
-            gran_x[count] = forest.x
-            gran_y[count] = forest.y
-            gran_z[count] = forest.z
-            gran_odl2[count] = forest.omega_delta_lambda2
-            gran_omega[count] = forest.omega
-            gran_dl[count * max_lenght : count * max_lenght + len_forest] = forest.delta_lambda
-            forest.index = count
-            count += 1
-
-    lenght_data = gran_dw.nbytes
-    lenght_data_small = gran_x.nbytes
-    gran_dc_d = cuda.mem_alloc(lenght_data)
-    gran_rx_d = cuda.mem_alloc(lenght_data)
-    gran_ry_d = cuda.mem_alloc(lenght_data)
-    gran_rz_d = cuda.mem_alloc(lenght_data)
-    gran_we_d = cuda.mem_alloc(lenght_data)
-    gran_dw_d = cuda.mem_alloc(lenght_data)
-    gran_dl_d = cuda.mem_alloc(lenght_data)
-    gran_x_d = cuda.mem_alloc(lenght_data_small)
-    gran_y_d = cuda.mem_alloc(lenght_data_small)
-    gran_z_d = cuda.mem_alloc(lenght_data_small)
-    gran_odl2_d = cuda.mem_alloc(lenght_data_small)
-    gran_omega_d = cuda.mem_alloc(lenght_data_small)
-
-    cuda.memcpy_htod(gran_dc_d, gran_dc)
-    cuda.memcpy_htod(gran_rx_d, gran_rx)
-    cuda.memcpy_htod(gran_ry_d, gran_ry)
-    cuda.memcpy_htod(gran_rz_d, gran_rz)
-    cuda.memcpy_htod(gran_we_d, gran_we)
-    cuda.memcpy_htod(gran_dw_d, gran_dw)
-    cuda.memcpy_htod(gran_dl_d, gran_dl)
-    cuda.memcpy_htod(gran_x_d, gran_x)
-    cuda.memcpy_htod(gran_y_d, gran_y)
-    cuda.memcpy_htod(gran_z_d, gran_z)
-    cuda.memcpy_htod(gran_odl2_d, gran_odl2)
-    cuda.memcpy_htod(gran_omega_d, gran_omega)
+    big, small, data = streaming_upload.stream_forests_to_gpu(
+        plan, ('dc', 'rx', 'ry', 'rz', 'we', 'dw', 'delta_lambda'),
+        ('x', 'y', 'z', 'omega_delta_lambda2', 'omega'), params.gpu_dtype)
+    gran_dc_d, gran_rx_d, gran_ry_d, gran_rz_d = big['dc'], big['rx'], big['ry'], big['rz']
+    gran_we_d, gran_dw_d, gran_dl_d = big['we'], big['dw'], big['delta_lambda']
+    gran_x_d, gran_y_d, gran_z_d = small['x'], small['y'], small['z']
+    gran_odl2_d, gran_omega_d = small['omega_delta_lambda2'], small['omega']
 
     numpix_d = gpuarray.to_gpu(np.array(shape_hist, dtype = np.int32))
     weight_B_d = gpuarray.to_gpu(weight_B)
@@ -196,6 +135,28 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     global dist_hist_d
     global binner_d
 
+    global compute_d_shared_bytes
+
+    # compute_d's per-block cache of order_active's output (see the kernel's
+    # own comment and IMPROVEMENTS.md #22): one tot_pix-wide int32 slice per
+    # distinct neighbour (blockDim.z) the block covers, sized for the worst
+    # case since the real per-neighbour count is only known at kernel
+    # runtime. Checked once here, at the same size for every launch, for the
+    # same reason as pair_correlation's shared-memory check in
+    # correlation_procedures_pycuda.py.
+    compute_d_shared_bytes = (
+        params.distortion_threads_per_block[2] * int(total_bins) * np.dtype(np.int32).itemsize)
+    max_shared = cuda.Context.get_device().get_attribute(
+        cuda.device_attribute.MAX_SHARED_MEMORY_PER_BLOCK)
+    if compute_d_shared_bytes > max_shared:
+        raise RuntimeError(
+            "compute_d's per-block active-bin cache needs %d bytes of shared "
+            "memory (distortion_threads_per_block[2]=%d * %d bins * %d bytes), "
+            "but this GPU only has %d bytes per block. Use fewer/coarser bins "
+            "(numpix_rp x numpix_rt, from rmax and bin_size_r in "
+            "parameters.yml) or a smaller distortion_threads_per_block[2] to fit."
+            % (compute_d_shared_bytes, params.distortion_threads_per_block[2],
+               int(total_bins), np.dtype(np.int32).itemsize, max_shared))
 
     ldist = np.empty((total_bins,total_bins), dtype = params.gpu_dtype).nbytes
     dist_hist_d = cuda.mem_alloc(ldist)
@@ -228,11 +189,14 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, reject_aux, pixel_l
     r12 = cuda.mem_alloc(size_auxiliars_real)
     bin_rt = cuda.mem_alloc(size_auxiliars_int)
     bin_rp = cuda.mem_alloc(size_auxiliars_int)
+
+    return data
 def distortion_per_pixel(forest_list, **kargs):
     """ This function loops over the forests in a pixel and finds its neighbors
     I will use the method by Helion and only setting r1 as the center node
     of the triangle.
     """
+    global clamped_forests, forests_seen
 
     # Preparing data structure for the partial histograms
     dist_hist = np.empty((total_bins, total_bins), dtype = params.gpu_dtype)
@@ -251,16 +215,22 @@ def distortion_per_pixel(forest_list, **kargs):
         cuda.memset_d8_async(etas32, 0, le2.nbytes)
         cuda.memset_d8_async(etas33, 0, le2.nbytes)
         cuda.memset_d8_async(index_j, 0, le4.nbytes)
-        forest1_lenght = len(forest1.dc)
+        forest1_lenght = forest1.num_points
         # Looking for neighbors
         neighbors_full = forest1.neighborhood(data, angmax)
         number_of_neighs_full = len(neighbors_full)
+        forests_seen += 1
         number_of_neighs = int(np.ceil(number_of_neighs_full*(1.-reject_fraction)))
+        # The scratch buffers are sized for params.number_of_neighs neighbours
+        # per forest; keeping more would make the kernels index past them.
+        if number_of_neighs > params.number_of_neighs:
+            number_of_neighs = params.number_of_neighs
+            clamped_forests += 1
         # Choosing only a percentage of the pairs
         random.shuffle(neighbors_full) 
         neighbors = neighbors_full[:number_of_neighs]
         neigh_index = np.array([forest2.index for forest2 in neighbors], dtype = np.int32)
-        neigh_sizes = np.array([len(forest2.dc) for forest2 in neighbors], dtype = np.int32)
+        neigh_sizes = np.array([forest2.num_points for forest2 in neighbors], dtype = np.int32)
         base = np.array([forest1.index, forest1_lenght, number_of_neighs], dtype = np.int32)
 
         activeBs.fill(0)
@@ -275,7 +245,15 @@ def distortion_per_pixel(forest_list, **kargs):
 
         # Computing the total number of blocks per kernel. It is determined by the number of elements to be computed.
         total_blocks_x = int(np.ceil(forest1_lenght / params.distortion_threads_per_block[0]))
-        total_blocks_y = int(np.ceil(max_lenght / params.distortion_threads_per_block[1]))
+        # y only needs to cover this launch's actual kept neighbours
+        # (neigh_sizes), not the dataset-wide max_lenght every forest's
+        # buffer slot is padded to -- a forest1's neighbours are usually
+        # shorter than the longest forest in the whole set, so this skips
+        # blocks that would do no work (every thread in them fails the
+        # kernels' own `j < size2` check). Safe by construction: no
+        # neighbour's size2 exceeds neigh_sizes.max(), so no valid j is cut
+        # off. See IMPROVEMENTS.md #22.
+        total_blocks_y = int(np.ceil(int(neigh_sizes.max()) / params.distortion_threads_per_block[1]))
         total_blocks_z = int(np.ceil(number_of_neighs / params.distortion_threads_per_block[2]))
         total_blocks_dist = (total_blocks_x, total_blocks_y, total_blocks_z)
         total_blocks_x2 = int(np.ceil(shape_hist[0]*shape_hist[1] / params.threads_per_block_2d[0]))
@@ -307,10 +285,11 @@ def distortion_per_pixel(forest_list, **kargs):
         compute_d(max_lenght, numpix_d, base_d, neigh_index_d, neigh_sizes_d,
             gran_we_d, gran_dl_d,
             bin_rp, bin_rt,
-            activeBs_index,
+            activeBs_index, index_j,
             etas12, etas21, etas22, etas13, etas31, etas23, etas32, etas33,
             dist_hist_d,
-            block = params.distortion_threads_per_block, grid = total_blocks_dist
+            block = params.distortion_threads_per_block, grid = total_blocks_dist,
+            shared = compute_d_shared_bytes
             )
 
     cuda.memcpy_dtoh(dist_hist, dist_hist_d)
