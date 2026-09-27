@@ -85,6 +85,13 @@ def main():
     log_file.write('\nLoaded a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
     data = pixel_partition.load_rank_data(params.data_dir, owned_pixels, buffer_pixels, index['pixel_file'])
 
+    # The z*w histogram needs each pixel's redshift, which the extraction stores since it
+    # started computing it (data*.npy files from before do not have it).
+    first_forest = next(forest for forests in data.values() for forest in forests)
+    if not hasattr(first_forest, 'redshift'):
+        raise RuntimeError('The forests in ' + params.data_dir + ' have no redshift: they were extracted '
+            'with an older version. Run the extraction (lya2pcf-extract) again.')
+
     # Moving data dict to the correlation_procedures module
     if args.cpu:
         from . import correlation_procedures_cpu as correlations

@@ -115,7 +115,7 @@ def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description='This program takes the histogram files computed by the correlation step and outputs the correlation.')
     parser.add_argument('--write-coordinates', action = 'store_true', required = False,
-        help = 'Write arrays with the central values of the coordinates to each point of the correlation function.')
+        help = 'Write arrays (rp, rt, z) with the weighted average coordinates of each point of the correlation function.')
     parser.add_argument('--diagonal-error', action = 'store_true', required = False,
         help = 'For large number of bins, specially in the three-point correlation, the errors are estimated without the full covariance.')
     args = parser.parse_args()
@@ -137,10 +137,24 @@ def main():
     we_list = []
     cor_list = []
     counter = 0
+    # Sums over all pixels of the histograms of w, w*rp, w*rt and w*z, whose ratios
+    # are the weighted averages of rp, rt and z in each bin.
+    w_total = np.zeros(shape_hist)
+    rp_total = np.zeros(shape_hist)
+    rt_total = np.zeros(shape_hist)
+    z_total = np.zeros(shape_hist)
     for file in histogram_files:
-        w_hist, dw_hist = np.load(file)
+        histograms = np.load(file)
+        if len(histograms) != 5:
+            raise ValueError(file + ' has ' + str(len(histograms)) + ' histograms, but 5 are needed '
+                '(w, delta*w, w*z, w*rp, w*rt). It comes from an older version of the correlation step: run it again.')
+        w_hist, dw_hist, z_hist, rp_hist, rt_hist = histograms
         if counter == 0:
             shape = w_hist.shape
+        w_total += w_hist
+        rp_total += rp_hist
+        rt_total += rt_hist
+        z_total += z_hist
 
         w_hist = w_hist.flatten()
         dw_hist = dw_hist.flatten()
@@ -171,20 +185,26 @@ def main():
     np.save(os.path.join(params.corr_dir, error_name_file), error)
     print('The correlation and error were saved.')
 
-    # The following coordinates correspond to the center of the bins. They are not the
-    # weighted averages because we don't have enough computer power to compute them
-
-        
-    rp = correlation.copy()
-    rt = correlation.copy()
+    # The coordinates of each bin are the averages of rp, rt and z over all the pairs
+    # that fell in it, weighted like the correlation itself (sum of w*x / sum of w).
+    # A bin without any pair has no average: it gets the center of the bin for rp and rt,
+    # and the average z of the whole histogram for z.
+    rp = np.zeros(shape_hist)
+    rt = np.zeros(shape_hist)
     for i in range(params.numpix_rp):
             for j in range(params.numpix_rt):
                 rp[i,j]=(i + 0.5)*params.rpmax / params.numpix_rp
                 rt[i,j]=(j + 0.5)*params.rtmax / params.numpix_rt
+    z = np.full(shape_hist, z_total.sum() / w_total.sum())
+    filled = w_total != 0
+    rp[filled] = rp_total[filled] / w_total[filled]
+    rt[filled] = rt_total[filled] / w_total[filled]
+    z[filled] = z_total[filled] / w_total[filled]
     if args.write_coordinates:
         print('Writing the coordinates. They are not necessary, but might be useful if you are doing your own analysis.')
         np.save(os.path.join(params.corr_dir, 'rp'), rp)
         np.save(os.path.join(params.corr_dir, 'rt'), rt)
+        np.save(os.path.join(params.corr_dir, 'z'), z)
 
     try:
         distortion = np.load(os.path.join(params.corr_dir, "distortion.npy"))
@@ -199,11 +219,10 @@ def main():
     dtype=[('DA', 'f8'), ('RP', 'f8'), ('RT', 'f8'), ('Z', 'f8'), ('CO',matrix_type), ('DM',matrix_type)]   
     table_data = np.zeros(n_rows, dtype=dtype)
     table_data['DA'] = correlation.flatten()
-    # The values of RP and RT are in the center of the bins, while Z is a constant. Later I will compute the weighted
-    # averages
+    # RP, RT and Z are the weighted averages of each bin computed above.
     table_data['RP'] = rp.flatten()
     table_data['RT'] = rt.flatten()
-    table_data['Z']  = 2.38*np.ones(n_rows)
+    table_data['Z']  = z.flatten()
     table_data['CO'] = covariance
     table_data['DM'] = distortion
     

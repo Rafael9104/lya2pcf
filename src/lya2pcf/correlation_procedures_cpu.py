@@ -19,8 +19,10 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux):
 
 def two_point_per_pixel(pixel, **kargs):
     """ This function computes the weighted sum of w and delta*w for all pairs of data
-    and stores them in histograms to prepare for the correlation function. The
-    histograms are stored by healpix pixel of the first element in the pair.
+    and stores them in histograms to prepare for the correlation function. Three more
+    histograms hold the sums of w*z, w*rp and w*rt (z is the mean redshift of the pair),
+    which post-processing divides by the w histogram to get the weighted average of each
+    in every bin. The histograms are stored by healpix pixel of the first element in the pair.
     Parammeters:
     pixel   int
             The healpix pixel of the first element in the pair.
@@ -28,36 +30,48 @@ def two_point_per_pixel(pixel, **kargs):
             Maximum angle between to forests to fit in the histogram.
     shape_hist  array int (np, nt)
             Shape of the histogram in bits
+
+    Returns the tuple (w_hist, dw_hist, z_hist, rp_hist, rt_hist).
     """
     # Preparing data structure for the partial histograms
     w_hist  = np.zeros(shape_hist)
     dw_hist = np.zeros(shape_hist)
+    z_hist  = np.zeros(shape_hist)
+    rp_hist = np.zeros(shape_hist)
+    rt_hist = np.zeros(shape_hist)
 
     for forest1 in data[pixel]:
         # Looking for neighbors
         neighbors = forest1.neighborhood(data, angmax)
 
         for forest2 in neighbors:
-                w_hist_tmp, dw_hist_tmp = pair_correlation(angmax, forest1.ra,forest1.dec,forest1.we,forest1.dw,forest1.pl,forest1.dc,forest1.fib,forest2.ra,forest2.dec,forest2.we,forest2.dw,forest2.pl,forest2.dc,forest2.fib)
+                w_hist_tmp, dw_hist_tmp, z_hist_tmp, rp_hist_tmp, rt_hist_tmp = pair_correlation(angmax, forest1.ra,forest1.dec,forest1.we,forest1.dw,forest1.pl,forest1.dc,forest1.fib,forest1.redshift,forest2.ra,forest2.dec,forest2.we,forest2.dw,forest2.pl,forest2.dc,forest2.fib,forest2.redshift)
                 w_hist += w_hist_tmp
                 dw_hist += dw_hist_tmp
-    return (w_hist,dw_hist)
+                z_hist += z_hist_tmp
+                rp_hist += rp_hist_tmp
+                rt_hist += rt_hist_tmp
+    return (w_hist, dw_hist, z_hist, rp_hist, rt_hist)
 
 
 @jit(nopython=True, nogil=True)
-def pair_correlation(angmax, ra1,dec1,w1,dw1,pl1,dc1,fib1,ra2,dec2,w2,dw2,pl2,dc2,fib2):
-    """ Computes the sum of w and delta*w for a pair of forests and stores it in
-    a histogram according to their distance.
+def pair_correlation(angmax, ra1,dec1,w1,dw1,pl1,dc1,fib1,z1,ra2,dec2,w2,dw2,pl2,dc2,fib2,z2):
+    """ Computes the sum of w, delta*w, w*z, w*rp and w*rt for a pair of forests and
+    stores them in histograms according to their distance.
     Parammeters:
     angmax: Real           Maximum angle between forests to be considered in the histograms.
     ra1, dec1:  Real            Right assention and declination of the first forest.
     w1, dw1:    Array(Real)     Weight and delta times weight of the forest.
     pl1:    Int                 Plate id of the first forest, it is not used anymore.
     fib1:   Int                 Fib id of the first forest, it is not used anymore.
+    z1:     Array(Real)         Redshift of each pixel of the first forest.
     Same parammeters for the second forest
     """
     w_hist  = np.zeros(shape_hist)
     dw_hist = np.zeros(shape_hist)
+    z_hist  = np.zeros(shape_hist)
+    rp_hist = np.zeros(shape_hist)
+    rt_hist = np.zeros(shape_hist)
     len_this = len(dw1)
     if abs(ra1-ra2)<params.chiquito and abs(dec1-dec2)<params.chiquito:
         delta_theta = np.sqrt(((ra1-ra2)*np.cos(dec1))**2+(dec1-dec2)**2)
@@ -82,5 +96,8 @@ def pair_correlation(angmax, ra1,dec1,w1,dw1,pl1,dc1,fib1,ra2,dec2,w2,dw2,pl2,dc
                 if binp < params.numpix_rp and bint < params.numpix_rt:
                     w_hist[binp, bint] += w12
                     dw_hist[binp, bint] += dw12
-    return w_hist, dw_hist
+                    z_hist[binp, bint] += w12*0.5*(z1[i] + z2[j])
+                    rp_hist[binp, bint] += w12*rp
+                    rt_hist[binp, bint] += w12*rt
+    return w_hist, dw_hist, z_hist, rp_hist, rt_hist
 

@@ -17,6 +17,47 @@ mod = gpu_support.compile_kernels()
 
 pair_correlation = mod.get_function("pair_correlation")
 
+# Must match NUM_HISTOGRAMS in cuda_kernels.cpp: w, delta*w, w*z, w*rp, w*rt.
+NUM_HISTOGRAMS = 5
+
+
+def plan_shared_histograms(nbins):
+    """ Decides how many of pair_correlation's histograms go in shared memory.
+    Returns (n_shared, shared_bytes): the number of histograms (0 to NUM_HISTOGRAMS)
+    that the block accumulates in shared memory and the bytes to request for it.
+
+    A block gets 48 KB of shared memory by default; some GPUs (Volta and newer)
+    allow more if the kernel asks for it, up to their MAX_SHARED_MEMORY_PER_BLOCK_OPTIN.
+    Whatever the GPU allows is used, unless parameters.yml's shared_histograms says
+    otherwise. What is not in shared memory is added directly to global memory.
+    """
+    device = cuda.Context.get_device()
+    attributes = cuda.device_attribute
+    limit = device.get_attribute(attributes.MAX_SHARED_MEMORY_PER_BLOCK)
+    try:
+        limit = max(limit, device.get_attribute(attributes.MAX_SHARED_MEMORY_PER_BLOCK_OPTIN))
+    except AttributeError:
+        pass
+    limit -= pair_correlation.shared_size_bytes
+    histogram_bytes = nbins * np.dtype(myfloat).itemsize
+    n_shared = min(NUM_HISTOGRAMS, limit // histogram_bytes)
+    if params.shared_histograms is not None:
+        if not 0 <= params.shared_histograms <= NUM_HISTOGRAMS:
+            raise ValueError("shared_histograms must be between 0 and %d, got %r"
+                             % (NUM_HISTOGRAMS, params.shared_histograms))
+        if params.shared_histograms > n_shared:
+            raise RuntimeError(
+                "shared_histograms: %d needs %d bytes of shared memory per block, but this GPU allows %d. "
+                "Use at most %d, fewer/coarser bins, or leave it unset."
+                % (params.shared_histograms, params.shared_histograms * histogram_bytes,
+                   limit, n_shared))
+        n_shared = params.shared_histograms
+    shared_bytes = int(n_shared * histogram_bytes)
+    # Above the default 48 KB a kernel has to ask for it.
+    if shared_bytes > 48 * 1024:
+        pair_correlation.set_attribute(cuda.function_attribute.MAX_DYNAMIC_SHARED_SIZE_BYTES, shared_bytes)
+    return int(n_shared), shared_bytes
+
 
 @dataclass
 class ForestBuffers:
@@ -38,6 +79,7 @@ class ForestBuffers:
     gran_x_d: object
     gran_y_d: object
     gran_z_d: object
+    gran_redshift_d: object
     numpix_d: object
     max_lenght: int
     forest_count: int
@@ -83,7 +125,7 @@ def upload_forests(data, pixel_list = None):
     itemsize = np.dtype(myfloat).itemsize
     forest_bytes = count_forests * int(max_lenght) * itemsize
     gpu_support.require_memory(
-        6 * forest_bytes                                  # dc, rx, ry, rz, we, dw
+        7 * forest_bytes                                  # dc, rx, ry, rz, we, dw, redshift
         + 3 * count_forests * itemsize,                   # x, y, z
         "forest data (%d forests, longest %d pixels)" % (count_forests, max_lenght),
         ["split the deltas into more files with the extraction step's "
@@ -99,6 +141,7 @@ def upload_forests(data, pixel_list = None):
     gran_rz = np.zeros((count_forests * max_lenght), dtype = myfloat)
     gran_we = np.zeros((count_forests * max_lenght), dtype = myfloat)
     gran_dw = np.zeros((count_forests * max_lenght), dtype = myfloat)
+    gran_redshift = np.zeros((count_forests * max_lenght), dtype = myfloat)
     gran_x = np.zeros(count_forests, dtype = myfloat)
     gran_y = np.zeros(count_forests, dtype = myfloat)
     gran_z = np.zeros(count_forests, dtype = myfloat)
@@ -113,6 +156,7 @@ def upload_forests(data, pixel_list = None):
             gran_rz[count * max_lenght : count * max_lenght + len_forest] = forest.rz
             gran_we[count * max_lenght : count * max_lenght + len_forest] = forest.we
             gran_dw[count * max_lenght : count * max_lenght + len_forest] = forest.dw
+            gran_redshift[count * max_lenght : count * max_lenght + len_forest] = forest.redshift
             gran_x[count] = forest.x
             gran_y[count] = forest.y
             gran_z[count] = forest.z
@@ -127,6 +171,7 @@ def upload_forests(data, pixel_list = None):
     gran_rz_d = cuda.mem_alloc(lenght_data)
     gran_we_d = cuda.mem_alloc(lenght_data)
     gran_dw_d = cuda.mem_alloc(lenght_data)
+    gran_redshift_d = cuda.mem_alloc(lenght_data)
     gran_x_d = cuda.mem_alloc(lenght_data_small)
     gran_y_d = cuda.mem_alloc(lenght_data_small)
     gran_z_d = cuda.mem_alloc(lenght_data_small)
@@ -137,6 +182,7 @@ def upload_forests(data, pixel_list = None):
     cuda.memcpy_htod(gran_rz_d, gran_rz)
     cuda.memcpy_htod(gran_we_d, gran_we)
     cuda.memcpy_htod(gran_dw_d, gran_dw)
+    cuda.memcpy_htod(gran_redshift_d, gran_redshift)
     cuda.memcpy_htod(gran_x_d, gran_x)
     cuda.memcpy_htod(gran_y_d, gran_y)
     cuda.memcpy_htod(gran_z_d, gran_z)
@@ -146,7 +192,7 @@ def upload_forests(data, pixel_list = None):
     return ForestBuffers(
         gran_dc_d=gran_dc_d, gran_rx_d=gran_rx_d, gran_ry_d=gran_ry_d, gran_rz_d=gran_rz_d,
         gran_we_d=gran_we_d, gran_dw_d=gran_dw_d, gran_x_d=gran_x_d, gran_y_d=gran_y_d, gran_z_d=gran_z_d,
-        numpix_d=numpix_d, max_lenght=max_lenght, forest_count=count_forests)
+        gran_redshift_d=gran_redshift_d, numpix_d=numpix_d, max_lenght=max_lenght, forest_count=count_forests)
 
 
 def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
@@ -177,8 +223,11 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     global gran_x_d
     global gran_y_d
     global gran_z_d
+    global gran_redshift_d
     global numpix_d
     global max_lenght
+    global n_shared
+    global shared_bytes
 
     data = data_aux
     log_file = log_file_aux
@@ -195,14 +244,21 @@ def init(data_aux, log_file_aux, shape_hist_aux, angmax_aux, pixel_list = None):
     gran_x_d = buffers.gran_x_d
     gran_y_d = buffers.gran_y_d
     gran_z_d = buffers.gran_z_d
+    gran_redshift_d = buffers.gran_redshift_d
     numpix_d = buffers.numpix_d
     max_lenght = buffers.max_lenght
+
+    n_shared, shared_bytes = plan_shared_histograms(int(np.prod(shape_hist)))
+    log_file.write('\n%d of the %d histograms are accumulated in shared memory (%d bytes per block).'
+                   % (n_shared, NUM_HISTOGRAMS, shared_bytes))
 
 
 def two_point_per_pixel(pixel, **kargs):
     """ This function computes the weighted sum of w and delta*w for all pairs of data
-    and stores them in histograms to prepare for the correlation function. The
-    histograms are stored by healpix pixel of the first element in the pair.
+    and stores them in histograms to prepare for the correlation function. Three more
+    histograms hold the sums of w*z, w*rp and w*rt (z is the mean redshift of the pair),
+    which post-processing divides by the w histogram to get the weighted average of each
+    in every bin. The histograms are stored by healpix pixel of the first element in the pair.
     Parammeters:
     pixel   int
             The healpix pixel of the first element in the pair.
@@ -210,16 +266,19 @@ def two_point_per_pixel(pixel, **kargs):
             Maximum angle between to forests to fit in the histogram.
     shape_hist  array int (np, nt)
             Shape of the histogram in bits
+
+    Returns an array of shape (5,) + shape_hist with the histograms w, delta*w, w*z,
+    w*rp and w*rt, in that order.
     """
-    # Preparing data structure for the partial histograms
-    w_hist = np.zeros(shape_hist, dtype = myfloat)
-    dw_hist = np.zeros(shape_hist, dtype = myfloat)
+    # Preparing data structure for the partial histograms: the five, one after the
+    # other, in a single buffer (see pair_correlation).
+    hist = np.zeros((NUM_HISTOGRAMS,) + tuple(shape_hist), dtype = myfloat)
     numpix2d_d = gpuarray.to_gpu(np.array(shape_hist, dtype = np.int32))
 
-    w_hist_d = cuda.mem_alloc(w_hist.nbytes)
-    dw_hist_d = cuda.mem_alloc(w_hist.nbytes)
-    cuda.memcpy_htod(w_hist_d, w_hist)
-    cuda.memcpy_htod(dw_hist_d, dw_hist)
+    hist_d = cuda.mem_alloc(hist.nbytes)
+    # It is necessary to initiallize the histograms at zero, otherwise resicual noise
+    # from the memory can get in the computation
+    cuda.memcpy_htod(hist_d, hist)
 
     # Passing data to the GPU
     rmax_d = gpuarray.to_gpu(np.array([params.rpmax,params.rtmax],dtype=myfloat))
@@ -250,17 +309,17 @@ def two_point_per_pixel(pixel, **kargs):
         blocks_per_grid = (forest1_lenght, 1, 1)
 
         pair_correlation(base_d, neigh_index_d, neigh_sizes_d,
-                numpix2d_d, max_lenght,
-            rmax_d, w_hist_d, dw_hist_d, 
+                numpix2d_d, max_lenght, np.int32(n_shared),
+            rmax_d, hist_d,
             gran_dc_d, gran_rx_d, gran_ry_d, gran_rz_d, gran_we_d, gran_dw_d, gran_x_d, gran_y_d, gran_z_d,
-            block = threads_per_block, grid = blocks_per_grid)
+            gran_redshift_d,
+            block = threads_per_block, grid = blocks_per_grid, shared = shared_bytes)
         
         # This is necessary to avoid to overwrite x12, y12, z12, bin_r12 with the next forest
         pycuda.autoinit.context.synchronize()
 
-    cuda.memcpy_dtoh(w_hist, w_hist_d)
-    cuda.memcpy_dtoh(dw_hist, dw_hist_d)
+    cuda.memcpy_dtoh(hist, hist_d)
 
-    return (w_hist, dw_hist)
+    return hist
 
 

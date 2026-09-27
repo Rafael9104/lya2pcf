@@ -105,10 +105,30 @@ __global__ void precompute_distances(int max_lenght, int *base, int *neigh_index
 }
 
 
+/* pair_correlation accumulates NUM_HISTOGRAMS histograms per pair, stored one
+   after the other in `hist` (each numpix_rp*numpix_rt bins, bin index
+   binp*numpix_rt + bint):
+     0: w         1: delta*w      2: w*z (z = mean redshift of the pair)
+     3: w*rp      4: w*rt
+   Post-processing divides histograms 2, 3 and 4 by histogram 0 to get the
+   weighted average z, rp and rt of each bin.
+
+   The first n_shared of them are accumulated in a per-block copy in dynamic
+   shared memory (n_shared * numpix_rp * numpix_rt * sizeof(myfloat) bytes,
+   passed as the launch's `shared=`), which is added to `hist` once when the
+   block ends; the others are added to `hist` directly for every pair.
+   n_shared is chosen by the driver from what the GPU allows (0 to
+   NUM_HISTOGRAMS), so the same kernel runs from a card with 48 KB per block
+   to one that offers more on request. */
+#define NUM_HISTOGRAMS 5
+
+extern __shared__ myfloat shared_hist[];
+
 __global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
-        int *numpix, int max_lenght,
-        myfloat *rmax, myfloat *w_hist, myfloat *dw_hist, 
-        myfloat *dc, myfloat *rx, myfloat *ry, myfloat *rz,  myfloat *we, myfloat *dw, myfloat *x, myfloat *y, myfloat *z){
+        int *numpix, int max_lenght, int n_shared,
+        myfloat *rmax, myfloat *hist,
+        myfloat *dc, myfloat *rx, myfloat *ry, myfloat *rz,  myfloat *we, myfloat *dw, myfloat *x, myfloat *y, myfloat *z,
+        myfloat *redshift){
     const myfloat rpmax = rmax[0];
     const myfloat rtmax = rmax[1];
     const int numpix_rp  = numpix[0];
@@ -133,11 +153,22 @@ __global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
 
     int hist_index;
 
+    // Every thread of the block takes part in zeroing and flushing the shared
+    // histograms, so these syncs are outside the (block-uniform) if(i < size1).
+    const int nbins = numpix_rp*numpix_rt;
+    const int thread_id = threadIdx.y*blockDim.z + threadIdx.z;
+    const int block_threads = blockDim.y*blockDim.z;
+    for(int b = thread_id; b < n_shared*nbins; b += block_threads){
+        shared_hist[b] = 0;
+    }
+    __syncthreads();
+
     if(i < size1){
         int indice1i = indice1 * max_lenght + i;
         myfloat rc_1 = dc[indice1i];
         myfloat w_1 = we[indice1i];
         myfloat dw_1 = dw[indice1i];
+        myfloat redshift_1 = redshift[indice1i];
 
         for(int j = starty; j < numero_neigs; j+=stridey){
             int indice2 = neigh_index[j];
@@ -156,21 +187,42 @@ __global__ void pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
                 myfloat rc_2 = dc[indice2k];
                 myfloat w_2 = we[indice2k];
                 myfloat dw_2 = dw[indice2k];
+                myfloat redshift_2 = redshift[indice2k];
 
                 myfloat rp = fabs(rc_1 - rc_2) * cos_half12;
                 myfloat rt = (rc_1 + rc_2) * sin_half12;
+                myfloat w_12 = w_1*w_2;
+                myfloat dw_12 = dw_1*dw_2;
                 
                 int binp = myfloat2int_rd(rp * binner_rp);
                 int bint = myfloat2int_rd(rt * binner_rt);
 
                 if(binp < numpix_rp && bint < numpix_rt){
                     hist_index = binp*numpix_rt + bint;
-                    atomicAdd(&w_hist[hist_index], w_1*w_2);
-                    atomicAdd(&dw_hist[hist_index], dw_1*dw_2);
-
+                    const myfloat values[NUM_HISTOGRAMS] = {w_12, dw_12,
+                        w_12*0.5*(redshift_1 + redshift_2), w_12*rp, w_12*rt};
+                    // n_shared is the same for every thread, so this does not diverge.
+                    #pragma unroll
+                    for(int h = 0; h < NUM_HISTOGRAMS; h++){
+                        if(h < n_shared){
+                            atomicAdd(&shared_hist[h*nbins + hist_index], values[h]);
+                        }else{
+                            atomicAdd(&hist[h*nbins + hist_index], values[h]);
+                        }
+                    }
                 }
 
             }
+        }
+    }
+
+    // Adding the block's shared histograms to the global ones. Only the bins
+    // this block touched are non-zero.
+    __syncthreads();
+    for(int b = thread_id; b < n_shared*nbins; b += block_threads){
+        const myfloat value = shared_hist[b];
+        if(value != 0){
+            atomicAdd(&hist[b], value);
         }
     }
 }

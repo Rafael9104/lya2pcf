@@ -53,7 +53,7 @@ this will produce the files `data#.npy` that will be used to compute the correla
 $ lya2pcf-extract-eboss --delta-dir DELTA_DIR
 ```
 
-Next we need to compute the histograms of w and wdelta which is the more computationally expensive part. Edit `parameters.yml`
+Next we need to compute the histograms of w and wdelta (plus w*rp, w*rt and w*z, which give the weighted-average coordinates of every bin) which is the more computationally expensive part. Edit `parameters.yml`
 to the appropiate rmax, and number of bins that you want to compute your correlation function, as well as the location of
 your prefered output directory. (`parameters.yml` is read from the current directory by default; set the `LYA2PCF_CONFIG`
 environment variable to point somewhere else.) Then execute:

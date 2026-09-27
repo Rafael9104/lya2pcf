@@ -106,6 +106,10 @@ max_threads = _cfg['max_threads']
 
 number_of_neighs = _cfg['number_of_neighs']
 
+# How many of pair_correlation's histograms are accumulated in shared memory.
+# None (the default) uses as many as the GPU allows.
+shared_histograms = _cfg.get('shared_histograms')
+
 # If using a machine with several cuda devices
 number_of_cuda_devices = _cfg['number_of_cuda_devices']
 cuda_device_first_number = _cfg['cuda_device_first_number']
