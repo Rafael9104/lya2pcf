@@ -2221,3 +2221,30 @@ Registers are unchanged (32 in `compute_d`, `pair_correlation`).
 never reads, and the distortion driver allocates four scratch buffers
 (`x12, y12, z12, r12`, `4 * max_lenght^2 * neighbours * itemsize`) that
 `precompute_distances` writes and no kernel reads.
+
+## 26. GPU drivers keep their state in objects, not module globals
+
+`correlation_procedures_pycuda.init()` and `distortion_procedures_pycuda.init()`
+set 16 and 46 module-level `global`s (device buffers, `max_lenght`, the
+forest dict, the counters) that the per-pixel functions then read, so a second
+`init()` in the same process would silently replace the first one's buffers,
+and nothing said where a name came from. They are now classes:
+
+- `TwoPointGPU(plan, shape_hist, angmax)` with `.data`, `.buffers` (the
+  `ForestBuffers` from `upload_forests`, unchanged) and
+  `.two_point_per_pixel(pixel)`.
+- `DistortionGPU(plan, shape_hist, angmax, reject_fraction)` with `.data`,
+  `.distortion_per_pixel(forests)` and the counters `.clamped_forests` /
+  `.forests_seen` (`distortion.py` reads them from the object; with no pixels
+  on a rank there is no object and nothing to report). `random.seed(1)` moved
+  from import time to the constructor; the neighbour subset is the same.
+  `le1`..`le4` (host arrays only used for `.nbytes`) became three byte counts.
+
+The unused `log_file` argument of the GPU two-point `init` is gone; the CPU
+driver is unchanged. The compiled kernels and the CUDA context are still
+module-level, so this is not yet the one-thread-per-GPU layout described in #6,
+but nothing else in the driver blocks it any more.
+
+Checked with the two-point and distortion smoke runs (2 pixels): same files,
+totals agree to <1e-7 relative (per-bin float32 atomic-order noise, as between
+two runs of the same code).

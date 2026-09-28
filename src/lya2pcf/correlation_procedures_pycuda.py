@@ -23,7 +23,7 @@ class ForestBuffers:
     """Device buffers holding every uploaded forest, as filled by
     upload_forests(). Public so other GPU code over the same forests (a
     three-point correlation, say) can consume it without going through
-    two_point_per_pixel's module-level globals.
+    TwoPointGPU.
 
     forest.index into these flat, max_lenght-strided buffers is set by the
     upload, which is how a caller locates a given forest's own slice of them.
@@ -92,128 +92,98 @@ def upload_forests(plan):
         numpix_d=numpix_d, max_lenght=max_lenght, forest_count=count_forests, data=light_data)
 
 
-def init(plan, log_file_aux, shape_hist_aux, angmax_aux):
-    """ Copies the forests of `plan` to the GPU once, to avoid the overhead of
+class TwoPointGPU:
+    """ The forests of one MPI rank on the GPU, and the pair_correlation launches over them.
+
+    Copies the forests of `plan` to the GPU once, to avoid the overhead of
     copying them at every call (see upload_forests).
     Parameters:
     plan        pixel_partition.ForestPlan
                 The rank's own pixels plus their neighbour buffer.
+    shape_hist  shape of the (rp, rt) histogram
+    angmax      maximum angle between two forests that are neighbours
 
-    Returns the {pixel: [forests]} dict two_point_per_pixel works from, with the
-    per-pixel arrays already dropped.
+    `data` is the {pixel: [forests]} dict two_point_per_pixel works from, with the
+    per-pixel arrays already dropped; the device arrays are kept in `buffers`.
     """
-    global data
-    global log_file
-    global shape_hist
-    global angmax
 
-    global gran_dc_d
-    global gran_rx_d
-    global gran_ry_d
-    global gran_rz_d
-    global gran_we_d
-    global gran_dw_d
-    global gran_x_d
-    global gran_y_d
-    global gran_z_d
-    global numpix_d
-    global max_lenght
+    def __init__(self, plan, shape_hist, angmax):
+        self.shape_hist = shape_hist
+        self.angmax = angmax
 
-    global pair_correlation_shared_bytes
+        # pair_correlation's per-block histogram (w_hist and dw_hist, both
+        # shape_hist-sized) lives in dynamic shared memory -- see the kernel's
+        # own comment. Checked once here, at the same size for every launch,
+        # since shape_hist is fixed for the run and a raw CUDA "out of shared
+        # memory" error at launch time would not say why or suggest a fix.
+        self.shared_bytes = 2 * int(np.prod(shape_hist)) * np.dtype(myfloat).itemsize
+        max_shared = cuda.Context.get_device().get_attribute(
+            cuda.device_attribute.MAX_SHARED_MEMORY_PER_BLOCK)
+        if self.shared_bytes > max_shared:
+            raise RuntimeError(
+                "pair_correlation's per-block histogram needs %d bytes of shared "
+                "memory (2 * %d * %d bins * %d bytes for %s), but this GPU only "
+                "has %d bytes per block. Use fewer/coarser bins (numpix_rp x "
+                "numpix_rt, from rmax and bin_size_r in parameters.yml) to fit."
+                % (self.shared_bytes, shape_hist[0], shape_hist[1],
+                   np.dtype(myfloat).itemsize, myfloat, max_shared))
 
-    log_file = log_file_aux
-    shape_hist = shape_hist_aux
-    angmax = angmax_aux
+        self.buffers = upload_forests(plan)
+        self.data = self.buffers.data
 
-    # pair_correlation's per-block histogram (w_hist and dw_hist, both
-    # shape_hist-sized) lives in dynamic shared memory -- see the kernel's
-    # own comment. Checked once here, at the same size for every launch,
-    # since shape_hist is fixed for the run and a raw CUDA "out of shared
-    # memory" error at launch time would not say why or suggest a fix.
-    pair_correlation_shared_bytes = 2 * int(np.prod(shape_hist)) * np.dtype(myfloat).itemsize
-    max_shared = cuda.Context.get_device().get_attribute(
-        cuda.device_attribute.MAX_SHARED_MEMORY_PER_BLOCK)
-    if pair_correlation_shared_bytes > max_shared:
-        raise RuntimeError(
-            "pair_correlation's per-block histogram needs %d bytes of shared "
-            "memory (2 * %d * %d bins * %d bytes for %s), but this GPU only "
-            "has %d bytes per block. Use fewer/coarser bins (numpix_rp x "
-            "numpix_rt, from rmax and bin_size_r in parameters.yml) to fit."
-            % (pair_correlation_shared_bytes, shape_hist[0], shape_hist[1],
-               np.dtype(myfloat).itemsize, myfloat, max_shared))
+    def two_point_per_pixel(self, pixel):
+        """ This function computes the weighted sum of w and delta*w for all pairs of data
+        and stores them in histograms to prepare for the correlation function. The
+        histograms are stored by healpix pixel of the first element in the pair.
+        Parameters:
+        pixel   int
+                The healpix pixel of the first element in the pair.
+        """
+        b = self.buffers
+        shape_hist = self.shape_hist
 
-    buffers = upload_forests(plan)
-    data = buffers.data
-    gran_dc_d = buffers.gran_dc_d
-    gran_rx_d = buffers.gran_rx_d
-    gran_ry_d = buffers.gran_ry_d
-    gran_rz_d = buffers.gran_rz_d
-    gran_we_d = buffers.gran_we_d
-    gran_dw_d = buffers.gran_dw_d
-    gran_x_d = buffers.gran_x_d
-    gran_y_d = buffers.gran_y_d
-    gran_z_d = buffers.gran_z_d
-    numpix_d = buffers.numpix_d
-    max_lenght = buffers.max_lenght
+        # Preparing data structure for the partial histograms
+        w_hist_d = gpuarray.zeros(shape_hist, dtype = myfloat)
+        dw_hist_d = gpuarray.zeros(shape_hist, dtype = myfloat)
 
-    return data
+        # The per-launch scalars go to the kernel by value (numpy scalars: pycuda
+        # picks the C type from the numpy type), not through small device arrays.
+        numpix_rp, numpix_rt = np.int32(shape_hist[0]), np.int32(shape_hist[1])
+        rpmax, rtmax = myfloat(params.rpmax), myfloat(params.rtmax)
+        # y and z genuinely parallelize the kernel's two strided loops (over
+        # pixels within each neighbour, and over neighbours -- y is the
+        # coalesced one, see the kernel's own comment), so they're the same
+        # shared 2D block used for order_active. x must stay 1: the kernel
+        # reads its pixel-in-forest1 index from blockIdx.x, not threadIdx.x,
+        # so blockDim.x > 1 would run the same accumulation redundantly and
+        # double-count into the histogram.
+        threads_per_block = (1,) + params.threads_per_block_2d
 
+        for forest1 in self.data[pixel]:
 
-def two_point_per_pixel(pixel):
-    """ This function computes the weighted sum of w and delta*w for all pairs of data
-    and stores them in histograms to prepare for the correlation function. The
-    histograms are stored by healpix pixel of the first element in the pair.
-    Parameters:
-    pixel   int
-            The healpix pixel of the first element in the pair.
-    angmax real
-            Maximum angle between to forests to fit in the histogram.
-    shape_hist  array int (np, nt)
-            Shape of the histogram in bits
-    """
-    # Preparing data structure for the partial histograms
-    w_hist_d = gpuarray.zeros(shape_hist, dtype = myfloat)
-    dw_hist_d = gpuarray.zeros(shape_hist, dtype = myfloat)
+            # Looking for neighbors
+            neighbors = forest1.neighborhood(self.data, self.angmax)
+            if len(neighbors) == 0:
+                # This forest have zero neighbors
+                continue
+            forest1_lenght = forest1.num_points
+            neigh_index = np.array([forest2.index for forest2 in neighbors],dtype=np.int32)
+            neigh_sizes = np.array([forest2.num_points for forest2 in neighbors], dtype = np.int32)
+            neigh_index_d = gpuarray.to_gpu(neigh_index)
+            neigh_sizes_d = gpuarray.to_gpu(neigh_sizes)
 
-    # The per-launch scalars go to the kernel by value (numpy scalars: pycuda
-    # picks the C type from the numpy type), not through small device arrays.
-    numpix_rp, numpix_rt = np.int32(shape_hist[0]), np.int32(shape_hist[1])
-    rpmax, rtmax = myfloat(params.rpmax), myfloat(params.rtmax)
-    # y and z genuinely parallelize the kernel's two strided loops (over
-    # pixels within each neighbour, and over neighbours -- y is the
-    # coalesced one, see the kernel's own comment), so they're the same
-    # shared 2D block used for order_active. x must stay 1: the kernel
-    # reads its pixel-in-forest1 index from blockIdx.x, not threadIdx.x,
-    # so blockDim.x > 1 would run the same accumulation redundantly and
-    # double-count into the histogram.
-    threads_per_block = (1,) + params.threads_per_block_2d
+            # Be careful, this can not change unless the kernel procedure change.
+            blocks_per_grid = (forest1_lenght, 1, 1)
 
-    for forest1 in data[pixel]:
+            pair_correlation(np.int32(forest1.index), np.int32(forest1_lenght), np.int32(len(neighbors)),
+                    neigh_index_d, neigh_sizes_d,
+                    numpix_rp, numpix_rt, np.int32(b.max_lenght),
+                    rpmax, rtmax, w_hist_d, dw_hist_d,
+                b.gran_dc_d, b.gran_rx_d, b.gran_ry_d, b.gran_rz_d, b.gran_we_d, b.gran_dw_d,
+                b.gran_x_d, b.gran_y_d, b.gran_z_d,
+                block = threads_per_block, grid = blocks_per_grid, shared = self.shared_bytes)
 
-        # Looking for neighbors
-        neighbors = forest1.neighborhood(data, angmax)
-        if len(neighbors) == 0:
-            # This forest have zero neighbors
-            continue
-        forest1_lenght = forest1.num_points
-        neigh_index = np.array([forest2.index for forest2 in neighbors],dtype=np.int32)
-        neigh_sizes = np.array([forest2.num_points for forest2 in neighbors], dtype = np.int32)
-        neigh_index_d = gpuarray.to_gpu(neigh_index)
-        neigh_sizes_d = gpuarray.to_gpu(neigh_sizes)
+            # This is necessary to avoid to overwrite x12, y12, z12, bin_r12 with the next forest
+            pycuda.autoinit.context.synchronize()
 
-        # Be careful, this can not change unless the kernel procedure change.
-        blocks_per_grid = (forest1_lenght, 1, 1)
-
-        pair_correlation(np.int32(forest1.index), np.int32(forest1_lenght), np.int32(len(neighbors)),
-                neigh_index_d, neigh_sizes_d,
-                numpix_rp, numpix_rt, np.int32(max_lenght),
-                rpmax, rtmax, w_hist_d, dw_hist_d,
-            gran_dc_d, gran_rx_d, gran_ry_d, gran_rz_d, gran_we_d, gran_dw_d, gran_x_d, gran_y_d, gran_z_d,
-            block = threads_per_block, grid = blocks_per_grid, shared = pair_correlation_shared_bytes)
-        
-        # This is necessary to avoid to overwrite x12, y12, z12, bin_r12 with the next forest
-        pycuda.autoinit.context.synchronize()
-
-    return (w_hist_d.get(), dw_hist_d.get())
-
-
+        return (w_hist_d.get(), dw_hist_d.get())

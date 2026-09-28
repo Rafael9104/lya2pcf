@@ -74,6 +74,7 @@ def main():
     print('Rank', mpi_rank, 'owns', len(owned_pixels), 'pixels.')
     log_file.write('\nThis rank owns ' + str(len(owned_pixels)) + ' pixels.')
 
+    gpu = None
     if len(owned_pixels) > 0:
         buffer_pixels = pixel_partition.find_buffer_pixels(owned_pixels, angmax, set(index['pixel_file']))
         log_file.write('\nFound a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
@@ -81,7 +82,7 @@ def main():
         # Streamed to the GPU one data file at a time; see streaming_upload.py.
         plan = pixel_partition.plan_rank_data(params.data_dir, index, owned_pixels, buffer_pixels)
         log_file.write('\nStreaming ' + str(plan.count_forests) + ' forests from ' + str(len(plan.files)) + ' data files to the GPU.')
-        data = distortion.init(plan, log_file, shape_hist, angmax, float(args.excluded))
+        gpu = distortion.DistortionGPU(plan, shape_hist, angmax, float(args.excluded))
 
         ###############################################################################
         # This is the core of the program, where the distortion matrix is computed    #
@@ -97,7 +98,7 @@ def main():
             log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
             log_file.flush()
 
-            disto_pix, weight_pix = distortion.distortion_per_pixel(data[pixel])
+            disto_pix, weight_pix = gpu.distortion_per_pixel(gpu.data[pixel])
             disto += disto_pix
             weight_A += weight_pix
 
@@ -109,10 +110,10 @@ def main():
         log_file.write('\nNo pixels assigned to this rank; nothing to do.')
         print('Rank', mpi_rank, 'has no pixels to compute.')
 
-    if distortion.clamped_forests > 0:
+    if gpu is not None and gpu.clamped_forests > 0:
         clamp_message = ('%d of %d forests (%.2f%%) had more neighbours than number_of_neighs=%d after the '
-            'exclusion and were capped.' % (distortion.clamped_forests, distortion.forests_seen,
-            100.*distortion.clamped_forests/distortion.forests_seen, params.number_of_neighs))
+            'exclusion and were capped.' % (gpu.clamped_forests, gpu.forests_seen,
+            100.*gpu.clamped_forests/gpu.forests_seen, params.number_of_neighs))
         print('Rank', mpi_rank, clamp_message)
         log_file.write('\n' + clamp_message)
         log_file.flush()
