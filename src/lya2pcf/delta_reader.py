@@ -1,7 +1,7 @@
 """
 This program takes the deltas in flux as computed by Picca or any other means with the same
 format 'deltadir/*.fits.gz' and stores the relevant data in a single file data.npy
-Parammeters:
+Parameters:
    delta_dir Path to the delta files
    data_dir  Directory where the data will be stored
 

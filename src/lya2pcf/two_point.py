@@ -8,13 +8,12 @@
 
 import argparse
 import os
-import time
 
 import numpy as np
 from mpi4py import MPI
 
 from . import parameters as params
-from .forest_class import quasar
+from .forest_class import quasar  # noqa: F401  (imported for its side effect: forest_class registers the legacy 'forest_class' module alias that older data*.npy files need to unpickle)
 from . import pixel_partition
 from . import mpi_devices
 
@@ -49,16 +48,10 @@ def main():
             'memory from 4 slices up on DR1); ring gives horizontal bands, which is better for only 2 slices.')
 
         args = parser.parse_args()
-
-        kwargs = {}
-        if args.verbose:
-            kwargs['performance'] = True
     else:
         args = None
-        kwargs = None
 
     args = comm.bcast(args, root = 0)
-    kwargs = comm.bcast(kwargs, root = 0)
 
     if args.gpu:
         cuda_device = mpi_devices.assign_gpu(comm)
@@ -122,7 +115,7 @@ def main():
         log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
         log_file.flush()
 
-        histo = correlations.two_point_per_pixel(pixel, **kwargs)
+        histo = correlations.two_point_per_pixel(pixel)
 
         np.save(os.path.join(params.corr_dir, name_partials + str(pixel)), histo)
         pixel_counter += 1
