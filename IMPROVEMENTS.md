@@ -2273,3 +2273,50 @@ totals agree <1e-7 (float32 atomic order per bin). `nvprof` GPU time of
 781 -> 450 ms, 809 -> 491 ms (-39..-42%); `compute_d` unchanged within drift
 (+1%, -4%, +1%). Registers: `precompute_distances` 28, `pair_correlation` 32.
 
+## 28. `pair_correlation`/`precompute_distances`: NaN and O(1e-4) error from the cos12 dot product near theta=0
+
+Found on the full DR1 run of 2026-09-26 (branch experiment/launch-bounds-chunks,
+weighted-average RP/RT/Z export -- a personal fork/experiment, not this repo's
+own history, but the kernel code is shared): the weighted-average RT came out
+NaN in 50 of 2500 bins, all at `bint = 0`.
+
+`cos12 = x1*x2 + y1*y2 + z1*z2` (the dot product of the two unit sightline
+directions) is in [-1, 1] mathematically, but computing a small angle theta
+this way needs the dot product to resolve `1 - O(theta^2)`, which float32 can't
+do once theta drops below ~1e-3 rad (~3.4 arcmin) -- far above the ~2 arcsec
+`chiquito` threshold the *CPU* path (`correlation_procedures_cpu.py`) uses its
+own flat-sky shortcut below, since that path is float64 and never gets close to
+its own precision floor. Below that scale `cos12` rounds unpredictably, in DR1
+enough to print "Error in cos12" ~196,608 times over the run. Two consequences,
+both from the same root cause, checked against a synthetic float32 test (a
+million random angle pairs, `theta` down to sub-microradian):
+- **NaN (the one that broke this run):** rounded a hair *past* 1, so
+  `sin_half12 = sqrt(0.5*(1-cos12))` was NaN for ~1% of pairs at theta < 1e-3
+  rad in the test. `myfloat2int_rd(NaN)` lands at bin 0 regardless of the true
+  separation, and every atomicAdd into that bin from then on stays NaN --
+  invisible in `w_hist`/`dw_hist` (built from `w1*w2`/`dw1*dw2`, not from
+  cos12), only in RP/RT/Z, so it went unnoticed until this histogram existed.
+- **Silent error even where it stayed finite:** up to 2.4e-4 in `sin_half12` in
+  the test, i.e. up to ~4 Mpc/h in `rt` (`(dc1+dc2)*sin_half12`, `dc` a few
+  thousand Mpc/h) -- larger than `bin_size_r` (4 Mpc/h). This mis-bins a
+  fraction of close pairs in `w_hist`/`dw_hist` too, unrelated to the histogram
+  above; it just never showed since nothing there is built from a quantity
+  sensitive enough to notice a few Mpc/h of error in `rt` alone.
+
+**Fix:** replace `sin_half12 = sqrt(0.5*(1-cos12))` with half the chord between
+the two unit vectors, `sin(theta/2) = |a-b|/2` for unit `a`, `b` -- algebraically
+the same quantity, but no cancellation, since `|a-b|` resolves small theta
+directly instead of via `1 - cos(theta)`. `cos_half12` follows from
+`sqrt(1 - sin_half12^2)` (no cancellation there either: `sin_half12` is small
+and accurate, so `1 - sin_half12^2` isn't). In the synthetic test this took the
+max error from 2.4e-4 to 1.1e-7 (float32 noise floor) and the NaN rate to zero,
+with `pair_correlation`'s and `precompute_distances`' (distortion) registers
+unchanged. Same fix in both kernels. (An earlier version of this fix also
+noted the same `acos`-based pattern in `precompute_distance_and_angles`, a
+duplicate kernel nothing here called; #25 has since removed it entirely.)
+
+Not rerun on a full DR1 set: this fixes an existing histogram bin's accuracy,
+not a fast-forwardable computation, so recovering it needs the correlation (and,
+for the distortion, `precompute_distances`) rerun from scratch. The
+already-computed 2026-09-26 run's 50 NaN bins were instead patched to their
+bin-centre fallback (a stand-in, not a fix) so Vega could run on it.

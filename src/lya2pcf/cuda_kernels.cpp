@@ -56,9 +56,13 @@ __global__ void precompute_distances(int max_lenght, const int * __restrict__ ba
             int indice12 = (i * number_of_neighs + f2) * max_lenght + j;
             int indice2j = indice2 * max_lenght + j;
             int indice1i = indice1 * max_lenght + i;
-            myfloat cos_sq =  x[indice1]*x[indice2] + y[indice1]*y[indice2] + z[indice1]*z[indice2];
-            myfloat cos_half12 = sqrt(0.5 * (1. + cos_sq));
-            myfloat sin_half12 = sqrt(0.5 * (1. - cos_sq));
+            // Same cancellation as pair_correlation's cos12 (see its comment there,
+            // and IMPROVEMENTS.md): sin(theta12/2) from the chord between the unit
+            // direction vectors instead of from the dot product, so it stays
+            // accurate (and NaN-safe) for near-duplicate sightline pairs.
+            myfloat dx_ang = x[indice1] - x[indice2], dy_ang = y[indice1] - y[indice2], dz_ang = z[indice1] - z[indice2];
+            myfloat sin_half12 = 0.5 * sqrt(min(myfloat(4.), dx_ang*dx_ang + dy_ang*dy_ang + dz_ang*dz_ang));
+            myfloat cos_half12 = sqrt(1. - sin_half12*sin_half12);
             myfloat rp = fabs(dc[indice1i] - dc[indice2j]) * cos_half12;
             myfloat rt = (dc[indice1i] + dc[indice2j]) * sin_half12;
 
@@ -157,10 +161,21 @@ __global__ void __launch_bounds__(1024, 2) pair_correlation(
             myfloat x2 = x[indice2];
             myfloat y2 = y[indice2];
             myfloat z2 = z[indice2];
-            myfloat cos12 = x1*x2 +  y1*y2 + z1*z2;
-            if(cos12 > 1.){ printf("Error in cos12");}
-            myfloat cos_half12 = sqrt(0.5 * (1. + cos12));
-            myfloat sin_half12 = sqrt(0.5 * (1. - cos12));
+            // sin(theta12/2) from half the chord between the two unit direction
+            // vectors (|a-b| = 2*sin(theta/2) for unit a, b), not from
+            // sqrt(0.5*(1-cos12)): cos12 = a.b loses precision exactly where theta
+            // is small (near-duplicate sightlines, common enough in DR1 that this
+            // matters), because it has to resolve 1 - O(theta^2) to represent a
+            // small angle. That can round cos12 a hair past 1, and sqrt() of the
+            // resulting tiny negative number under the old formula was NaN --
+            // which poisoned whichever bin the pair's rp/rt landed in permanently,
+            // since every atomicAdd into a NaN bin stays NaN (see IMPROVEMENTS.md).
+            // The chord itself has no such cancellation, so this is accurate as
+            // well as NaN-safe; min() only guards the 1 part in 1e7 (float) rounding
+            // that can still push the chord a hair past its exact [0, 2] range.
+            myfloat dx = x1 - x2, dy = y1 - y2, dz = z1 - z2;
+            myfloat sin_half12 = 0.5 * sqrt(min(myfloat(4.), dx*dx + dy*dy + dz*dz));
+            myfloat cos_half12 = sqrt(1. - sin_half12*sin_half12);
 
             for(int  k = startk; k < size2; k+=stridek){
                 int indice2k = indice2 * max_lenght + k;
