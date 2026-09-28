@@ -105,21 +105,21 @@ __global__ void precompute_distances(int max_lenght, int *base, int *neigh_index
 }
 
 
-__global__ void __launch_bounds__(1024, 2) pair_correlation(int *base, int *neigh_index, int *neigh_sizes,
-        int *numpix, int max_lenght,
-        myfloat *rmax, myfloat *w_hist, myfloat *dw_hist,
+__global__ void __launch_bounds__(1024, 2) pair_correlation(
+        const int indice1, const int size1, const int numero_neigs,
+        const int *neigh_index, const int *neigh_sizes,
+        const int numpix_rp, const int numpix_rt, const int max_lenght,
+        const myfloat rpmax, const myfloat rtmax,
+        myfloat *w_hist, myfloat *dw_hist,
         myfloat *dc, myfloat *rx, myfloat *ry, myfloat *rz,  myfloat *we, myfloat *dw, myfloat *x, myfloat *y, myfloat *z){
-    /* EXPERIMENT (branch experiment/pair-correlation-launch-bounds): as
-       profiled on main, this kernel uses 37 registers/thread with
-       blockDim=1024, which floors 65536/(37*1024) to 1 block/SM (50%
-       occupancy) -- registers are the binding constraint, not the shared
-       memory below (49152/20000B = 2 blocks/SM by that measure alone).
-       65536/(1024*regs) only crosses from 1 to 2 blocks/SM at <=32
-       regs/thread exactly (a threshold, not a gradual improvement), so
-       __launch_bounds__(1024, 2) instructs nvcc to target that budget,
-       spilling to local memory if it can't fit everything in 32
-       registers. Unverified whether the spill cost (if any) outweighs
-       the occupancy gain -- that's what this branch measures.
+    /* __launch_bounds__(1024, 2): the block is 1024 threads, and two blocks
+       fit on an SM only if the kernel uses at most 32 registers per thread
+       (65536 / (1024 * 2)); at 33 or more the count floors to one block per SM
+       (50% occupancy). Without the hint nvcc allocates 37 in float, so the hint
+       is what keeps two blocks resident. Passing the per-launch scalars by
+       value (below) brings the natural demand down to 32 in float, so the hint
+       no longer forces a spill there; in double it still spills a little
+       (IMPROVEMENTS.md #23, #24).
 
        Per-block (per pixel-of-forest1) private histogram, in shared memory.
        Sized dynamically at launch (2 * numpix_rp * numpix_rt * sizeof(myfloat),
@@ -129,13 +129,16 @@ __global__ void __launch_bounds__(1024, 2) pair_correlation(int *base, int *neig
        threads' worth of atomics per pixel pair only ever contend on-chip;
        only the final per-bin reduction below touches global memory, and only
        for bins this block actually hit (see IMPROVEMENTS.md's kernel
-       profiling entry for the atomic-contention numbers this replaces). */
+       profiling entry for the atomic-contention numbers this replaces).
+
+       The per-launch scalars (indice1, size1, numero_neigs, numpix_rp/rt,
+       max_lenght, rpmax/rtmax) are passed by value, not through 2-3
+       element device arrays: kernel parameters sit in the constant
+       parameter bank and are read as instruction operands, so they need
+       neither a global load nor a register to hold them, and the driver
+       no longer builds and copies a small array per forest. */
     extern __shared__ myfloat pc_shared[];
 
-    const myfloat rpmax = rmax[0];
-    const myfloat rtmax = rmax[1];
-    const int numpix_rp  = numpix[0];
-    const int numpix_rt = numpix[1];
     const myfloat binner_rp = numpix_rp/rpmax;
     const myfloat binner_rt = numpix_rt/rtmax;
     const int tot_pix = numpix_rp * numpix_rt;
@@ -143,10 +146,6 @@ __global__ void __launch_bounds__(1024, 2) pair_correlation(int *base, int *neig
     myfloat *sh_w = pc_shared;
     myfloat *sh_dw = pc_shared + tot_pix;
 
-    const int indice1 = base[0];
-    const int size1 = base[1];
-
-    const int numero_neigs = base[2];
 
     const int i = blockIdx.x;
     /* threadIdx.y is the fastest-varying dimension a warp packs (blockDim.x

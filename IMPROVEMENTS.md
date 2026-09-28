@@ -2124,8 +2124,62 @@ win for a one-line change with negligible spill.
 1.3e-8, ordinary float32 accumulation-order noise (same class as #21's), not
 a regression.
 
-**Status: measured, not yet merged.** Left on its own experimental branch
-pending a decision on whether to merge — the win is real and cheap, so this
-is a good candidate, but see #21/#22 for how often a plausible-looking
-occupancy lever in this codebase turned out not to be free (register
-spill's cost here is small, 8 B/thread, but wasn't zero).
+**Status: merged** (PR #29, 2026-09-23). The win was real and cheap; the
+register spill it costs is small (8 B/thread in float) but was not zero, which
+#24 then removes.
+
+## 24. `pair_correlation`: launch scalars by value instead of small device arrays
+
+Follow-up to #21/#23. `pair_correlation` received its per-launch scalars through
+three tiny device arrays: `base` (`indice1`, `size1`, number of neighbours;
+built and copied to the GPU for every forest), `numpix` (2 ints) and `rmax` (2
+floats), read by every thread at kernel start. They are now kernel arguments
+(`np.int32(...)` / `myfloat(...)` in `two_point_per_pixel`). Kernel parameters
+live in the constant parameter bank and are used directly as instruction
+operands, so they need neither a global load nor a register to hold them, and
+the driver no longer builds `base_d`, `numpix2d_d` and `rmax_d`.
+
+**Registers** (`nvcc -Xptxas -v` on the kernel file, `pair_correlation` only):
+
+| | float, `sm_52` | double, `sm_60` |
+|---|---|---|
+| main, no launch bounds | 37 regs, 0 B spill | 54 regs, 0 B spill |
+| **scalars, no launch bounds** | **32 regs**, 0 B spill | 48 regs, 0 B spill |
+| main, `__launch_bounds__(1024, 2)` (#23) | 32 regs, **8 B spill** | 32 regs, **40 B spill** |
+| **scalars, `__launch_bounds__(1024, 2)`** | 32 regs, **0 B spill** | 32 regs, **24 B spill** |
+
+In float the scalars alone reach the 32-register threshold for two 1024-thread
+blocks per SM, and the launch bounds no longer have to spill to get there.
+
+**Kernel time: no measurable change.** `nvprof` GPU summary, total time in
+`pair_correlation` (1,628 launches per run: the 16 pixels of a native-resolution
+DR1 subset, 1,446 forests, `max_lenght` 967, plus the warm-up pixel; `rmax`
+200; GTX 970, float32), the two versions alternated so drift cancels:
+
+| pair | main | scalars |
+|---|---:|---:|
+| 1 | 17.19 s | 18.52 s |
+| 2 | 19.15 s | 19.44 s |
+| 3 | 19.34 s | 19.47 s |
+
+The GPU got 13% slower over the six runs (17.2 s -> 19.5 s, settling from the
+second pair on), which is why pair 1, where `main` ran first on a cold GPU,
+looks like +7.7% for the scalars. From the second pair on, `main` averages
+19.25 s and the scalars 19.45 s (+1.0%), inside the run-to-run spread. The
+wall-clock benchmark (16 pixels, 3 passes per run, order main / scalars /
+scalars / main: 15.5 s, 17.2 s, 17.7 s, 17.7 s) drifts by more than any
+difference. So: **no speedup**, and no slowdown beyond noise. That is expected:
+#23 had already taken the kernel to 100% theoretical occupancy, and it is bound
+by memory and atomics, not by these few loads at the start.
+
+**Correctness.** Weighted sums agree to float32 noise: `w_sum` 1.6756207e10 in
+every run (relative spread 2e-9, the same as `main` against itself).
+
+**What it is worth, and what was not measured.** Fewer registers in double
+(54 -> 48 natural; the spill under the launch bounds 40 B -> 24 B per thread,
+which could matter for float64 runs, **not measured: no Pascal-or-newer GPU
+here**), one small host-to-device copy less per forest, and no leftover arrays
+to keep in step with the kernel signature. Only `pair_correlation` was
+converted: `precompute_distance_and_angles`, `precompute_distances`,
+`compute_etas`, `compute_d` and `order_active` still take `base` / `numpix`
+arrays. Not run on an A100.
