@@ -226,7 +226,17 @@ def main():
     table_data['CO'] = covariance
     table_data['DM'] = distortion
     
+    # Effective redshift of the correlation: the Z of each bin (the weighted average from the
+    # histogram) averaged with the inverse variance of the bin, over 0 < r < 300 Mpc/h, which is
+    # how Vega computes zeff from an exported correlation.
+    r = np.sqrt(table_data['RP']**2 + table_data['RT']**2)
+    variance = np.diagonal(covariance)
+    cells = (r > 0.) & (r < 300.) & (variance > 0.)
+    zeff = np.average(table_data['Z'][cells], weights = 1./variance[cells])
+    print('Effective redshift of the correlation: ' + str(zeff))
+
     header = {
+    'ZEFF': zeff,
     'RPMIN': 0,
     'RPMAX': params.rpmax,
     'RTMAX': params.rtmax,
