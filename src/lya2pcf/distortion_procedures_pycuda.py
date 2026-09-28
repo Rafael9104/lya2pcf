@@ -64,7 +64,7 @@ class DistortionGPU:
         ml, neighs, bins = int(max_lenght), params.number_of_neighs, int(total_bins)
         forest_bytes = count_forests * ml * itemsize
         gpu_support.require_memory(
-            7 * forest_bytes                             # dc, rx, ry, rz, we, dw, dl
+            3 * forest_bytes                             # dc, we, dl
             + 5 * count_forests * itemsize               # x, y, z, odl2, omega
             + bins * itemsize                            # weight_B
             + bins * bins * itemsize                     # dist_hist
@@ -72,20 +72,18 @@ class DistortionGPU:
             + 4 * bins * neighs * itemsize               # etas22/23/32/33
             + bins * neighs + bins * neighs * 4          # activeBs + index
             + neighs * 4                                 # index_j
-            + 4 * ml * ml * neighs * itemsize            # x12/y12/z12/r12
             + 2 * ml * ml * neighs * 4,                  # bin_rp/bin_rt
             "distortion buffers (longest forest %d pixels, %d neighbours, %d bins)"
             % (ml, neighs, bins),
-            ["coadd/rebin the deltas upstream: the x12/y12/z12/r12 buffers scale "
-             "as the square of the forest length, so coadding by 3 saves about 4x",
+            ["coadd/rebin the deltas upstream: the bin_rp/bin_rt buffers scale "
+             "as the square of the forest length, so coadding by 3 saves about 9x",
              "lower 'number_of_neighs' in parameters.yml, which scales most buffers",
              "use coarser binning (larger bin_size_r, or smaller rmax)"])
 
         big, small, self.data = streaming_upload.stream_forests_to_gpu(
-            plan, ('dc', 'rx', 'ry', 'rz', 'we', 'dw', 'delta_lambda'),
+            plan, ('dc', 'we', 'delta_lambda'),
             ('x', 'y', 'z', 'omega_delta_lambda2', 'omega'), params.gpu_dtype)
-        self.gran_dc_d, self.gran_rx_d, self.gran_ry_d, self.gran_rz_d = big['dc'], big['rx'], big['ry'], big['rz']
-        self.gran_we_d, self.gran_dw_d, self.gran_dl_d = big['we'], big['dw'], big['delta_lambda']
+        self.gran_dc_d, self.gran_we_d, self.gran_dl_d = big['dc'], big['we'], big['delta_lambda']
         self.gran_x_d, self.gran_y_d, self.gran_z_d = small['x'], small['y'], small['z']
         self.gran_odl2_d, self.gran_omega_d = small['omega_delta_lambda2'], small['omega']
 
@@ -136,12 +134,7 @@ class DistortionGPU:
         self.activeBs_index = gpuarray.zeros(shape_hist + (params.number_of_neighs,), dtype = np.int32)
         self.index_j = cuda.mem_alloc(self.index_j_bytes)
 
-        size_auxiliars_real = np.empty((max_lenght, max_lenght, params.number_of_neighs), dtype = params.gpu_dtype).nbytes
         size_auxiliars_int = np.empty((max_lenght, max_lenght, params.number_of_neighs), dtype = np.int32).nbytes
-        self.x12 = cuda.mem_alloc(size_auxiliars_real)
-        self.y12 = cuda.mem_alloc(size_auxiliars_real)
-        self.z12 = cuda.mem_alloc(size_auxiliars_real)
-        self.r12 = cuda.mem_alloc(size_auxiliars_real)
         self.bin_rt = cuda.mem_alloc(size_auxiliars_int)
         self.bin_rp = cuda.mem_alloc(size_auxiliars_int)
 
@@ -221,8 +214,8 @@ class DistortionGPU:
 
             # This kernel precomputes the distances from forest1 to every other forest in its neighborhood
             precompute_distances(max_lenght, base_d, neigh_index_d, neigh_sizes_d, self.binner_d,
-                self.gran_rx_d, self.gran_ry_d, self.gran_rz_d, self.gran_x_d, self.gran_y_d, self.gran_z_d, self.gran_dc_d,
-                self.x12, self.y12, self.z12, self.r12, self.bin_rp, self.bin_rt,
+                self.gran_x_d, self.gran_y_d, self.gran_z_d, self.gran_dc_d,
+                self.bin_rp, self.bin_rt,
                 block = params.distortion_threads_per_block, grid = total_blocks_dist)
 
 

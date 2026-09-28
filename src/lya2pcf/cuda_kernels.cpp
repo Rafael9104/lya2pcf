@@ -36,11 +36,9 @@ using myfloat = MYFLOAT;
 
 __global__ void precompute_distances(int max_lenght, const int * __restrict__ base,
     const int * __restrict__ neigh_index, const int * __restrict__ neigh_sizes, const myfloat * __restrict__ binner,
-    const myfloat * __restrict__ rx, const myfloat * __restrict__ ry, const myfloat * __restrict__ rz,
     const myfloat * __restrict__ x, const myfloat * __restrict__ y, const myfloat * __restrict__ z,
     const myfloat * __restrict__ dc,
-    myfloat * __restrict__ x12, myfloat * __restrict__ y12, myfloat * __restrict__ z12,
-    myfloat * __restrict__ r12, int * __restrict__ bin_rp, int * __restrict__ bin_rt) {
+    int * __restrict__ bin_rp, int * __restrict__ bin_rt) {
     const int i = blockDim.x*blockIdx.x + threadIdx.x;
     const int j = blockDim.y*blockIdx.y + threadIdx.y;
     const int f2 = blockDim.z*blockIdx.z + threadIdx.z;
@@ -58,21 +56,11 @@ __global__ void precompute_distances(int max_lenght, const int * __restrict__ ba
             int indice12 = (i * number_of_neighs + f2) * max_lenght + j;
             int indice2j = indice2 * max_lenght + j;
             int indice1i = indice1 * max_lenght + i;
-            myfloat rx_12 = rx[indice2j] - rx[indice1i];
-            myfloat ry_12 = ry[indice2j] - ry[indice1i];
-            myfloat rz_12 = rz[indice2j] - rz[indice1i];
-            myfloat n_12 = sqrt(rx_12 * rx_12 + ry_12 * ry_12 + rz_12 * rz_12);
-            myfloat inv = 1. / n_12;
             myfloat cos_sq =  x[indice1]*x[indice2] + y[indice1]*y[indice2] + z[indice1]*z[indice2];
             myfloat cos_half12 = sqrt(0.5 * (1. + cos_sq));
             myfloat sin_half12 = sqrt(0.5 * (1. - cos_sq));
             myfloat rp = fabs(dc[indice1i] - dc[indice2j]) * cos_half12;
             myfloat rt = (dc[indice1i] + dc[indice2j]) * sin_half12;
-
-            x12[indice12] = rx_12 * inv;
-            y12[indice12] = ry_12 * inv;
-            z12[indice12] = rz_12 * inv;
-            r12[indice12] = n_12;
 
             bin_rp[indice12] = int(rp * binner_rp);
             bin_rt[indice12] = int(rt * binner_rt);
@@ -87,8 +75,7 @@ __global__ void __launch_bounds__(1024, 2) pair_correlation(
         const int numpix_rp, const int numpix_rt, const int max_lenght,
         const myfloat rpmax, const myfloat rtmax,
         myfloat * w_hist, myfloat * dw_hist,
-        const myfloat * dc, const myfloat * rx, const myfloat * ry,
-        const myfloat * rz, const myfloat * we, const myfloat * dw,
+        const myfloat * dc, const myfloat * we, const myfloat * dw,
         const myfloat * x, const myfloat * y, const myfloat * z){
     /* __launch_bounds__(1024, 2): the block is 1024 threads, and two blocks
        fit on an SM only if the kernel uses at most 32 registers per thread
@@ -128,7 +115,7 @@ __global__ void __launch_bounds__(1024, 2) pair_correlation(
     const int i = blockIdx.x;
     /* threadIdx.y is the fastest-varying dimension a warp packs (blockDim.x
        is forced to 1 by the caller), so it drives k, the index *within* a
-       neighbour forest: dc/we/dw/rx/ry/rz store a forest's pixels
+       neighbour forest: dc/we/dw store a forest's pixels
        contiguously (offset = indice2*max_lenght + k), so a warp of
        consecutive k at fixed neighbour reads consecutive addresses --
        coalesced. threadIdx.z drives j, the neighbour index, which is a

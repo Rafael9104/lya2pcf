@@ -2248,3 +2248,28 @@ but nothing else in the driver blocks it any more.
 Checked with the two-point and distortion smoke runs (2 pixels): same files,
 totals agree to <1e-7 relative (per-bin float32 atomic-order noise, as between
 two runs of the same code).
+
+## 27. Dead outputs and inputs removed (the leftovers noted in #25)
+
+- **Distortion `precompute_distances`** wrote `x12, y12, z12, r12` (unit vector
+  and length of every pixel pair) that no kernel ever read, and computed them
+  with a `sqrt` and a division per thread. The four buffers
+  (`4 * max_lenght^2 * neighbours * itemsize`, e.g. 1.2 GB at `max_lenght` 967,
+  80 neighbours, float32; computed, not measured) and their writes are gone,
+  and with them the kernel's `rx, ry, rz` inputs. Only `bin_rp` / `bin_rt`
+  remain. The memory check and its hint (`bin_rp`/`bin_rt` scale as the square
+  of the forest length) follow.
+- **Distortion driver no longer uploads** `rx, ry, rz` and `dw`, which none of
+  its launches use: 4 fewer `count_forests * max_lenght * itemsize` buffers.
+  (`upload_forests`, shared with 3pla, is unchanged and still uploads them for
+  the two-point/three-point kernels.)
+- **`pair_correlation`** lost its unused `rx, ry, rz` parameters.
+- **`--verbose`** help said it shows timing statistics; it only stops after the
+  first two pixels of each rank. The help now says that (flag name unchanged).
+
+Checked like #25: two-point and distortion outputs before/after, same files,
+totals agree <1e-7 (float32 atomic order per bin). `nvprof` GPU time of
+`precompute_distances`, rotated order, 3 rounds, GTX 970 float32: 712 -> 431 ms,
+781 -> 450 ms, 809 -> 491 ms (-39..-42%); `compute_d` unchanged within drift
+(+1%, -4%, +1%). Registers: `precompute_distances` 28, `pair_correlation` 32.
+
