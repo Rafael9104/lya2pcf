@@ -105,6 +105,14 @@ max_threads: 1024
 
 number_of_neighs: 80
 
+# pair_correlation accumulates 5 histograms (w, delta*w, w*z, w*rp, w*rt). The
+# first ones can be kept in shared memory while a block runs, which is much
+# faster than adding every pair to global memory. By default as many as fit are
+# used: what a block can have (48 KB, or more on GPUs that allow asking for
+# it, like the A100) divided by the size of a histogram, numpix_rp x numpix_rt
+# bins. Uncomment to force a number from 0 to 5, e.g. 0 to use global memory only.
+# shared_histograms: 4
+
 # GPUs per node are detected, not configured: run mpirun with
 # -np <number of nodes> x <GPUs per node>. The run stops if a node has a
 # different number of ranks than GPUs.

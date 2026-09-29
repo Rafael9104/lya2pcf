@@ -84,6 +84,15 @@ def main():
     buffer_pixels = pixel_partition.find_buffer_pixels(owned_pixels, angmax, set(index['pixel_file']))
     log_file.write('\nFound a buffer of ' + str(len(buffer_pixels)) + ' neighbouring pixels from other files.')
 
+    # The z*w histogram needs each pixel's redshift, which the extraction stores since it
+    # started computing it (data*.npy files from before do not have it). Peeked from one
+    # file rather than loading everything, since the GPU path never holds it all in memory.
+    peek_file = os.path.join(params.data_dir, 'data%d.npy' % index['pixel_file'][owned_pixels[0]])
+    peek_forests = next(iter(np.load(peek_file, allow_pickle=True).item().values()))
+    if not hasattr(peek_forests[0], 'redshift'):
+        raise RuntimeError('The forests in ' + params.data_dir + ' have no redshift: they were extracted '
+            'with an older version. Run the extraction (lya2pcf-extract) again.')
+
     # The CPU path needs every forest's arrays in memory, so it loads them all. The GPU path
     # streams them to the GPU one data file at a time (streaming_upload.py) and keeps only
     # the light per-forest metadata in host memory.
@@ -98,6 +107,8 @@ def main():
         log_file.write('\nStreaming ' + str(plan.count_forests) + ' forests from ' + str(len(plan.files)) + ' data files to the GPU.')
         correlator = correlations.TwoPointGPU(plan, shape_hist, angmax)
         two_point_per_pixel = correlator.two_point_per_pixel
+        log_file.write('\n%d of the %d histograms are accumulated in shared memory (%d bytes per block).'
+                       % (correlator.n_shared, correlations.NUM_HISTOGRAMS, correlator.shared_bytes))
 
     num_pixels_partial = len(owned_pixels)
     log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +

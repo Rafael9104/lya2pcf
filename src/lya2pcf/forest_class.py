@@ -36,6 +36,8 @@ class quasar(object):
         self.dw = np.zeros(lenght, dtype=np.float64)
         self.we = np.zeros(lenght, dtype=np.float64)
         self.dc = np.zeros(lenght, dtype=np.float64)
+        # Redshift of each pixel of the forest, lambda/lambda_Lya - 1
+        self.redshift = np.zeros(lenght, dtype=np.float64)
 
         # Unitary cartesian coordinates
         self.x = np.cos(ra)*np.cos(dec)

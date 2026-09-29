@@ -153,6 +153,7 @@ def record_from_deltas(file):
         
         comov_distance = cosmology.dc_interpol(z)
         forest_data.dc = comov_distance
+        forest_data.redshift = z
         forest_data.rx = forest_data.x * comov_distance
         forest_data.ry = forest_data.y * comov_distance
         forest_data.rz = forest_data.z * comov_distance
