@@ -81,7 +81,7 @@ z_ref = _cfg['z_ref']
 nside = _cfg['nside']  # Healpix parammeter
 chiquito = _cfg['chiquito_arcsec'] / 3600. * 3.14159 / 180.
 
-# Parammeters for the cosmology module
+# Parameters for the cosmology module
 Omm = _cfg['Omm']
 OmDE = 1. - Omm
 d_H0 = c / 100  # Mpc/h

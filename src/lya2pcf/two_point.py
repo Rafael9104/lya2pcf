@@ -8,13 +8,12 @@
 
 import argparse
 import os
-import time
 
 import numpy as np
 from mpi4py import MPI
 
 from . import parameters as params
-from .forest_class import quasar
+from .forest_class import quasar  # noqa: F401  (imported for its side effect: forest_class registers the legacy 'forest_class' module alias that older data*.npy files need to unpickle)
 from . import pixel_partition
 from . import mpi_devices
 
@@ -41,7 +40,7 @@ def main():
             help='Compute the forest correlation with the help of a GPU.')
 
         parser.add_argument('--verbose', action = 'store_true', required = False,
-            help = 'Show statistics of computation time. Only computes the correlation for a few forests.')
+            help = 'Quick test run: stops after the first two pixels of each rank (no timing statistics are printed).')
 
         parser.add_argument('--partition-order', choices=['nest', 'ring'], default='nest', required=False,
             help='How the healpix pixels are ordered before being cut into one contiguous slice per MPI rank. '
@@ -49,16 +48,10 @@ def main():
             'memory from 4 slices up on DR1); ring gives horizontal bands, which is better for only 2 slices.')
 
         args = parser.parse_args()
-
-        kwargs = {}
-        if args.verbose:
-            kwargs['performance'] = True
     else:
         args = None
-        kwargs = None
 
     args = comm.bcast(args, root = 0)
-    kwargs = comm.bcast(kwargs, root = 0)
 
     if args.gpu:
         cuda_device = mpi_devices.assign_gpu(comm)
@@ -107,11 +100,15 @@ def main():
         from . import correlation_procedures_cpu as correlations
         data = pixel_partition.load_rank_data(params.data_dir, owned_pixels, buffer_pixels, index['pixel_file'])
         correlations.init(data, log_file, shape_hist, angmax)
+        two_point_per_pixel = correlations.two_point_per_pixel
     else:
         from . import correlation_procedures_pycuda as correlations
         plan = pixel_partition.plan_rank_data(params.data_dir, index, owned_pixels, buffer_pixels)
         log_file.write('\nStreaming ' + str(plan.count_forests) + ' forests from ' + str(len(plan.files)) + ' data files to the GPU.')
-        correlations.init(plan, log_file, shape_hist, angmax)
+        correlator = correlations.TwoPointGPU(plan, shape_hist, angmax)
+        two_point_per_pixel = correlator.two_point_per_pixel
+        log_file.write('\n%d of the %d histograms are accumulated in shared memory (%d bytes per block).'
+                       % (correlator.n_shared, correlations.NUM_HISTOGRAMS, correlator.shared_bytes))
 
     num_pixels_partial = len(owned_pixels)
     log_file.write('\nThis process computes ' + str(num_pixels_partial) + ' pixels, which go from ' +
@@ -131,7 +128,7 @@ def main():
         log_file.write('\nComputing pixel ' + str(pixel) + ', completed ' + str(int(pixel_counter/num_pixels_partial*100)) + '%')
         log_file.flush()
 
-        histo = correlations.two_point_per_pixel(pixel, **kwargs)
+        histo = two_point_per_pixel(pixel)
 
         np.save(os.path.join(params.corr_dir, name_partials + str(pixel)), histo)
         pixel_counter += 1

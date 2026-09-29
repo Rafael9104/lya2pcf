@@ -2124,8 +2124,199 @@ win for a one-line change with negligible spill.
 1.3e-8, ordinary float32 accumulation-order noise (same class as #21's), not
 a regression.
 
-**Status: measured, not yet merged.** Left on its own experimental branch
-pending a decision on whether to merge — the win is real and cheap, so this
-is a good candidate, but see #21/#22 for how often a plausible-looking
-occupancy lever in this codebase turned out not to be free (register
-spill's cost here is small, 8 B/thread, but wasn't zero).
+**Status: merged** (PR #29, 2026-09-23). The win was real and cheap; the
+register spill it costs is small (8 B/thread in float) but was not zero, which
+#24 then removes.
+
+## 24. `pair_correlation`: launch scalars by value instead of small device arrays
+
+Follow-up to #21/#23. `pair_correlation` received its per-launch scalars through
+three tiny device arrays: `base` (`indice1`, `size1`, number of neighbours;
+built and copied to the GPU for every forest), `numpix` (2 ints) and `rmax` (2
+floats), read by every thread at kernel start. They are now kernel arguments
+(`np.int32(...)` / `myfloat(...)` in `two_point_per_pixel`). Kernel parameters
+live in the constant parameter bank and are used directly as instruction
+operands, so they need neither a global load nor a register to hold them, and
+the driver no longer builds `base_d`, `numpix2d_d` and `rmax_d`.
+
+**Registers** (`nvcc -Xptxas -v` on the kernel file, `pair_correlation` only):
+
+| | float, `sm_52` | double, `sm_60` |
+|---|---|---|
+| main, no launch bounds | 37 regs, 0 B spill | 54 regs, 0 B spill |
+| **scalars, no launch bounds** | **32 regs**, 0 B spill | 48 regs, 0 B spill |
+| main, `__launch_bounds__(1024, 2)` (#23) | 32 regs, **8 B spill** | 32 regs, **40 B spill** |
+| **scalars, `__launch_bounds__(1024, 2)`** | 32 regs, **0 B spill** | 32 regs, **24 B spill** |
+
+In float the scalars alone reach the 32-register threshold for two 1024-thread
+blocks per SM, and the launch bounds no longer have to spill to get there.
+
+**Kernel time: no measurable change.** `nvprof` GPU summary, total time in
+`pair_correlation` (1,628 launches per run: the 16 pixels of a native-resolution
+DR1 subset, 1,446 forests, `max_lenght` 967, plus the warm-up pixel; `rmax`
+200; GTX 970, float32), the two versions alternated so drift cancels:
+
+| pair | main | scalars |
+|---|---:|---:|
+| 1 | 17.19 s | 18.52 s |
+| 2 | 19.15 s | 19.44 s |
+| 3 | 19.34 s | 19.47 s |
+
+The GPU got 13% slower over the six runs (17.2 s -> 19.5 s, settling from the
+second pair on), which is why pair 1, where `main` ran first on a cold GPU,
+looks like +7.7% for the scalars. From the second pair on, `main` averages
+19.25 s and the scalars 19.45 s (+1.0%), inside the run-to-run spread. The
+wall-clock benchmark (16 pixels, 3 passes per run, order main / scalars /
+scalars / main: 15.5 s, 17.2 s, 17.7 s, 17.7 s) drifts by more than any
+difference. So: **no speedup**, and no slowdown beyond noise. That is expected:
+#23 had already taken the kernel to 100% theoretical occupancy, and it is bound
+by memory and atomics, not by these few loads at the start.
+
+**Correctness.** Weighted sums agree to float32 noise: `w_sum` 1.6756207e10 in
+every run (relative spread 2e-9, the same as `main` against itself).
+
+**What it is worth, and what was not measured.** Fewer registers in double
+(54 -> 48 natural; the spill under the launch bounds 40 B -> 24 B per thread,
+which could matter for float64 runs, **not measured: no Pascal-or-newer GPU
+here**), one small host-to-device copy less per forest, and no leftover arrays
+to keep in step with the kernel signature. Only `pair_correlation` was
+converted: `precompute_distances`, `compute_etas`, `compute_d` and
+`order_active` still take `base` / `numpix` arrays (`precompute_distance_and_angles`
+no longer exists here, see #25). Not run on an A100.
+
+## 25. Kernel signatures: `const` everywhere, `__restrict__` only where it was measured to help
+
+Tidiness pass over `cuda_kernels.cpp`, with a timing guard so nothing gets slower.
+
+**Duplicate kernel removed.** `precompute_distance_and_angles` was a copy of the
+kernel of the same name in 3pla (its only user; nothing in lya2pcf launched
+it). It lives only in 3pla now, so there is one home for it.
+
+**`const` on every input pointer** of `pair_correlation`, `precompute_distances`,
+`compute_etas`, `compute_d` and `order_active` (the kernel only reads it), so
+the signature says which buffers are outputs. This is free: the machine code of
+`pair_correlation` and `compute_d` (float, `sm_52`) is identical to before.
+
+**`__restrict__` on top of it, only where it paid off.** `__restrict__` promises
+that no two pointers of a launch alias (true in both drivers: every buffer is
+its own allocation). On Maxwell it turns plain global loads into cached
+non-coherent loads (`LDG.E.CI`), which helps or hurts depending on the kernel.
+`nvprof` GPU time, GTX 970, float32, the variants run in rotated order (the GPU
+drifts ~13% slower over a session, so a fixed order misleads):
+
+| kernel | with `__restrict__` vs. none |
+|---|---|
+| `order_active` | -30 .. -35% |
+| `compute_etas` | -12 .. -18% |
+| `precompute_distances` | -7 .. -15% |
+| `compute_d` | 0 .. +4% (never faster; `const` alone is neutral) |
+| `pair_correlation` | +1.4% (4 of 4 rounds; `const` alone +0.1%) |
+
+So the first three keep `const * __restrict__` inputs and `__restrict__`
+outputs; `pair_correlation` and `compute_d` have `const` only. The rule and
+these numbers are in a "Signature convention" comment at the top of the file.
+Registers are unchanged (32 in `compute_d`, `pair_correlation`).
+
+**Noticed, not changed.** `pair_correlation` still takes `rx, ry, rz`, which it
+never reads, and the distortion driver allocates four scratch buffers
+(`x12, y12, z12, r12`, `4 * max_lenght^2 * neighbours * itemsize`) that
+`precompute_distances` writes and no kernel reads.
+
+## 26. GPU drivers keep their state in objects, not module globals
+
+`correlation_procedures_pycuda.init()` and `distortion_procedures_pycuda.init()`
+set 16 and 46 module-level `global`s (device buffers, `max_lenght`, the
+forest dict, the counters) that the per-pixel functions then read, so a second
+`init()` in the same process would silently replace the first one's buffers,
+and nothing said where a name came from. They are now classes:
+
+- `TwoPointGPU(plan, shape_hist, angmax)` with `.data`, `.buffers` (the
+  `ForestBuffers` from `upload_forests`, unchanged) and
+  `.two_point_per_pixel(pixel)`.
+- `DistortionGPU(plan, shape_hist, angmax, reject_fraction)` with `.data`,
+  `.distortion_per_pixel(forests)` and the counters `.clamped_forests` /
+  `.forests_seen` (`distortion.py` reads them from the object; with no pixels
+  on a rank there is no object and nothing to report). `random.seed(1)` moved
+  from import time to the constructor; the neighbour subset is the same.
+  `le1`..`le4` (host arrays only used for `.nbytes`) became three byte counts.
+
+The unused `log_file` argument of the GPU two-point `init` is gone; the CPU
+driver is unchanged. The compiled kernels and the CUDA context are still
+module-level, so this is not yet the one-thread-per-GPU layout described in #6,
+but nothing else in the driver blocks it any more.
+
+Checked with the two-point and distortion smoke runs (2 pixels): same files,
+totals agree to <1e-7 relative (per-bin float32 atomic-order noise, as between
+two runs of the same code).
+
+## 27. Dead outputs and inputs removed (the leftovers noted in #25)
+
+- **Distortion `precompute_distances`** wrote `x12, y12, z12, r12` (unit vector
+  and length of every pixel pair) that no kernel ever read, and computed them
+  with a `sqrt` and a division per thread. The four buffers
+  (`4 * max_lenght^2 * neighbours * itemsize`, e.g. 1.2 GB at `max_lenght` 967,
+  80 neighbours, float32; computed, not measured) and their writes are gone,
+  and with them the kernel's `rx, ry, rz` inputs. Only `bin_rp` / `bin_rt`
+  remain. The memory check and its hint (`bin_rp`/`bin_rt` scale as the square
+  of the forest length) follow.
+- **Distortion driver no longer uploads** `rx, ry, rz` and `dw`, which none of
+  its launches use: 4 fewer `count_forests * max_lenght * itemsize` buffers.
+  (`upload_forests`, shared with 3pla, is unchanged and still uploads them for
+  the two-point/three-point kernels.)
+- **`pair_correlation`** lost its unused `rx, ry, rz` parameters.
+- **`--verbose`** help said it shows timing statistics; it only stops after the
+  first two pixels of each rank. The help now says that (flag name unchanged).
+
+Checked like #25: two-point and distortion outputs before/after, same files,
+totals agree <1e-7 (float32 atomic order per bin). `nvprof` GPU time of
+`precompute_distances`, rotated order, 3 rounds, GTX 970 float32: 712 -> 431 ms,
+781 -> 450 ms, 809 -> 491 ms (-39..-42%); `compute_d` unchanged within drift
+(+1%, -4%, +1%). Registers: `precompute_distances` 28, `pair_correlation` 32.
+
+## 28. `pair_correlation`/`precompute_distances`: NaN and O(1e-4) error from the cos12 dot product near theta=0
+
+Found on the full DR1 run of 2026-09-26 (branch experiment/launch-bounds-chunks,
+weighted-average RP/RT/Z export -- a personal fork/experiment, not this repo's
+own history, but the kernel code is shared): the weighted-average RT came out
+NaN in 50 of 2500 bins, all at `bint = 0`.
+
+`cos12 = x1*x2 + y1*y2 + z1*z2` (the dot product of the two unit sightline
+directions) is in [-1, 1] mathematically, but computing a small angle theta
+this way needs the dot product to resolve `1 - O(theta^2)`, which float32 can't
+do once theta drops below ~1e-3 rad (~3.4 arcmin) -- far above the ~2 arcsec
+`chiquito` threshold the *CPU* path (`correlation_procedures_cpu.py`) uses its
+own flat-sky shortcut below, since that path is float64 and never gets close to
+its own precision floor. Below that scale `cos12` rounds unpredictably, in DR1
+enough to print "Error in cos12" ~196,608 times over the run. Two consequences,
+both from the same root cause, checked against a synthetic float32 test (a
+million random angle pairs, `theta` down to sub-microradian):
+- **NaN (the one that broke this run):** rounded a hair *past* 1, so
+  `sin_half12 = sqrt(0.5*(1-cos12))` was NaN for ~1% of pairs at theta < 1e-3
+  rad in the test. `myfloat2int_rd(NaN)` lands at bin 0 regardless of the true
+  separation, and every atomicAdd into that bin from then on stays NaN --
+  invisible in `w_hist`/`dw_hist` (built from `w1*w2`/`dw1*dw2`, not from
+  cos12), only in RP/RT/Z, so it went unnoticed until this histogram existed.
+- **Silent error even where it stayed finite:** up to 2.4e-4 in `sin_half12` in
+  the test, i.e. up to ~4 Mpc/h in `rt` (`(dc1+dc2)*sin_half12`, `dc` a few
+  thousand Mpc/h) -- larger than `bin_size_r` (4 Mpc/h). This mis-bins a
+  fraction of close pairs in `w_hist`/`dw_hist` too, unrelated to the histogram
+  above; it just never showed since nothing there is built from a quantity
+  sensitive enough to notice a few Mpc/h of error in `rt` alone.
+
+**Fix:** replace `sin_half12 = sqrt(0.5*(1-cos12))` with half the chord between
+the two unit vectors, `sin(theta/2) = |a-b|/2` for unit `a`, `b` -- algebraically
+the same quantity, but no cancellation, since `|a-b|` resolves small theta
+directly instead of via `1 - cos(theta)`. `cos_half12` follows from
+`sqrt(1 - sin_half12^2)` (no cancellation there either: `sin_half12` is small
+and accurate, so `1 - sin_half12^2` isn't). In the synthetic test this took the
+max error from 2.4e-4 to 1.1e-7 (float32 noise floor) and the NaN rate to zero,
+with `pair_correlation`'s and `precompute_distances`' (distortion) registers
+unchanged. Same fix in both kernels. (An earlier version of this fix also
+noted the same `acos`-based pattern in `precompute_distance_and_angles`, a
+duplicate kernel nothing here called; #25 has since removed it entirely.)
+
+Not rerun on a full DR1 set: this fixes an existing histogram bin's accuracy,
+not a fast-forwardable computation, so recovering it needs the correlation (and,
+for the distortion, `precompute_distances`) rerun from scratch. The
+already-computed 2026-09-26 run's 50 NaN bins were instead patched to their
+bin-centre fallback (a stand-in, not a fix) so Vega could run on it.

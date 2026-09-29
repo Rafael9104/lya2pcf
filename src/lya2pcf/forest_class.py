@@ -88,8 +88,8 @@ class quasar(object):
 
     def neighborhood(self, data, angmax):
         """ This function finds the neighbors of a given forest to be used for two or three point correlation function.
-        It adds the requierement ra_neigh>ra_self in order to repeat pairs
-        Parammeters:
+        It adds the requirement ra_neigh>ra_self so that each pair is counted once
+        Parameters:
         self     forest
                     The forest used to find its neighbors
         angmax  float
@@ -110,8 +110,8 @@ class quasar(object):
 
     def neighborhood_names(self, data, angmax):
         """ This function finds the neighbors of a given forest to be used for two or three point correlation function.
-        It adds the requierement ra_neigh>ra_self in order to repeat pairs
-        Parammeters:
+        It adds the requirement ra_neigh>ra_self so that each pair is counted once
+        Parameters:
         self     forest
                     The forest used to find its neighbors
         angmax  float
