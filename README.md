@@ -1,6 +1,10 @@
 # lya2pcf
 This program computes the correlation functions of the Lyman alpha forest.
 
+If you are on NERSC (Perlmutter), the generic install steps below need a few
+extra fixes -- see the [dedicated section](#nersc-perlmutter) before you hit
+them the hard way.
+
 ## Download and configuration
 
 If you are intended to use it for testing download the git repository with
@@ -39,6 +43,64 @@ $ pip install --no-binary mpi4py -e ".[gpu]"
 ```
 Either way this puts the `lya2pcf-*` commands used below on your `PATH`,
 and makes `lya2pcf` importable as a library from any directory.
+
+### NERSC (Perlmutter)
+
+Installing and running on Perlmutter needs a few extra steps beyond the
+generic instructions above, all specific to its Cray/HPC-SDK software stack.
+
+**Environment**, once (a plain venv rather than conda works fine):
+```
+$ module load python
+$ python -m venv $HOME/venvs/lya2pcf   # or somewhere in /global/common/software
+```
+and every session after that:
+```
+$ source $HOME/venvs/lya2pcf/bin/activate
+```
+
+**Building mpi4py** needs the Cray compiler wrapper, not a generic `mpicc`,
+plus a clean rebuild so it actually picks up whatever `cray-mpich` module you
+have loaded (a cached/prebuilt version can otherwise silently link against
+the wrong one):
+```
+$ MPICC="cc -shared" pip install --force-reinstall --no-cache-dir --no-binary=mpi4py mpi4py
+```
+
+**Building pycuda** fails at the final link step (`cannot find -lcurand`)
+unless the linker is also pointed at NVIDIA HPC SDK's `math_libs` tree: the
+HPC SDK splits the math libraries (`libcurand`, `libcublas`, ...) into a
+directory separate from the core CUDA toolkit (`cuda/<ver>/lib64`), which is
+the only one `pycuda`'s own build looks at. `LDFLAGS`'s `-rpath` makes the
+fix permanent (baked into the compiled `.so`, not needed again after this):
+```
+$ find /opt/nvidia/hpc_sdk/Linux_x86_64/*/math_libs -name "libcurand.so*"  # confirm the path below still matches
+$ export MATH_LIBS=/opt/nvidia/hpc_sdk/Linux_x86_64/26.5/math_libs/13.2/lib64
+$ export LIBRARY_PATH=$MATH_LIBS:$LIBRARY_PATH
+$ export LDFLAGS="-Wl,-rpath,$MATH_LIBS $LDFLAGS"
+$ pip install -e ".[gpu]"
+```
+
+**Running anything that imports mpi4py** (`lya2pcf-correlate`,
+`lya2pcf-distort`) needs two things set *every session* (unlike the two
+build-time fixes above, these aren't baked into anything): mpi4py's newer
+"MPI ABI" loader resolves the actual MPI library at runtime via `dlopen`,
+and Cray's generic-named MPICH ABI shim
+(`libmpi.so.12`, for programs that don't expect Cray's own compiler-tagged
+name) lives in a `lib-abi-mpich` directory next to `cray-mpich`'s normal
+`lib/`, which isn't on the linker path by default. Separately, Cray MPICH
+aborts on init if GPU-aware MPI support is requested but not linked in
+(`MPIDI_CRAY_init: GPU_SUPPORT_ENABLED is requested, but GTL library is not
+linked`) -- lya2pcf's own MPI use is plain host-memory `bcast`/`reduce`, so
+just turn that off rather than rebuild mpi4py against the GTL library:
+```
+$ export MPICH_GPU_SUPPORT_ENABLED=0
+$ export LD_LIBRARY_PATH=/opt/cray/pe/mpich/9.1.0/ofi/gnu/12.3/lib-abi-mpich:$CRAY_LD_LIBRARY_PATH:$LD_LIBRARY_PATH
+```
+The `cray-mpich` path is tied to the module version actually loaded
+(`module show cray-mpich` to check, or `find /opt/cray/pe/mpich -name
+"libmpi*.so*"` to search more broadly) -- the one above matched
+`cray-mpich/9.1.0` with `PrgEnv-gnu`; it will differ on another module set.
 
 ## Usage
 
