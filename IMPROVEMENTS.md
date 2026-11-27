@@ -10,7 +10,8 @@ Every other item on this list is done. Remaining:
 
 - **#4** — In-memory pipeline (skip `data.npy` round-trip) — **now the
   best next target for wall time, see the 2026-09-18 measurements in the item**
-- **#11** — Add a rebinning (coadding) procedure to lya2pcf
+- **#11** — Add a rebinning (coadding) procedure to lya2pcf — **done
+  2026-11-26**, branch `feat/delta-rebinning` (not yet merged)
 - **#13** — Forests are padded to `max_lenght`, wasting a large share of
   GPU memory
 - **#14** — `np.save` of the forest objects is slow and spikes RAM at
@@ -840,6 +841,21 @@ physical argument for why coadding costs little accuracy.
 **Depends on:** nothing structural, but it lands naturally with #4
 (in-memory pipeline), since both are changes to how `delta_reader.py`
 builds forests.
+
+**Done 2026-11-26** on branch `feat/delta-rebinning`. `rebin: N` in
+`parameters.yml`, overridable with `lya2pcf-extract --rebin N`.
+`delta_reader.rebin_forest` groups pixels by `grid_index // N` on the
+file's native LAMBDA grid, so every forest has the same bin edges and a
+masked pixel just leaves its group smaller. Delta and lambda are
+WEIGHT-weighted means, the new weight is the sum, and groups with zero
+total weight are dropped. This happens *before* the redshift-evolution
+factor and `fill_dw`, so the projection and the `delta_lambda` moments
+are computed on the coadded sampling. The extractor prints the mean
+spacing between neighbouring pixels (Angstrom and Mpc/h) before and after,
+and `data_index.npy` records `rebin`. On picca's test deltas (converted to
+image format) `--rebin 3` takes the spacing from 1.91 to 5.69 Mpc/h and
+`max_lenght` from 208 to 70, with total weight conserved to 3e-7.
+`delta_reader_eboss.py` (the per-forest-HDU layout) does not rebin.
 
 ## 12. Detect max_lenght / neighbour overruns instead of corrupting memory
 

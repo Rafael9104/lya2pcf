@@ -35,6 +35,14 @@ delta_keys:
   ra: "RA"
   dec: "DEC"
 
+# Rebinning (coadding) of the deltas, done by lya2pcf-extract as the forests
+# are read: every `rebin` consecutive pixels of the native wavelength grid are
+# averaged into one, weighted by WEIGHT (delta and lambda are weighted means,
+# the new weight is the sum). 1 keeps the native sampling. Overridden by
+# lya2pcf-extract --rebin. Coadding by 3 cuts the distortion's GPU memory
+# about 4x, since some of its buffers scale as max_lenght squared.
+rebin: 1
+
 # Size and number of pixels of correlation outputs
 bin_size_r: 4  # Mpc/h
 rmax: 200  # Mpc/h
