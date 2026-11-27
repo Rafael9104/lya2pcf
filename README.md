@@ -110,7 +110,11 @@ Once you have the files in `DELTA_DIR/*.fits.gz` run:
 ```
 $ lya2pcf-extract --delta-dir DELTA_DIR --split-number NUMBER_FILES
 ```
-this will produce the files `data#.npy` that will be used to compute the correlation functions. If you are using data from eBOSS extract the delta files with the following command instead:
+this will produce the files `data#.npy` that will be used to compute the correlation functions.
+
+The deltas can be rebinned (coadded) during extraction with `--rebin N` (or `rebin: N` in `parameters.yml`): every N neighbouring pixels of the native wavelength grid are averaged into one, weighted by WEIGHT. This shortens the forests, which cuts the GPU memory and run time of the correlation and distortion steps considerably. The extractor prints the mean distance between neighbouring points before and after rebinning, to compare against `bin_size_r`.
+
+If you are using data from eBOSS extract the delta files with the following command instead (it does not support rebinning):
 ```
 $ lya2pcf-extract-eboss --delta-dir DELTA_DIR
 ```
