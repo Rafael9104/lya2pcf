@@ -53,6 +53,12 @@ if _missing_keys:
     raise ValueError("delta_keys in %s is missing: %s"
                      % (_config_path, ', '.join(_missing_keys)))
 
+# Rebinning (coadding) of the deltas at extraction; see parameters.yml.
+rebin = _cfg.get('rebin', 1)
+if not isinstance(rebin, int) or isinstance(rebin, bool) or rebin < 1:
+    raise ValueError("rebin in %s must be a positive integer, got %r"
+                     % (_config_path, rebin))
+
 # Size and number of pixels of correlation outputs
 bin_size_r = _cfg['bin_size_r']
 rmax = _cfg['rmax']

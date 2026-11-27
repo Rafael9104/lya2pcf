@@ -12,6 +12,7 @@ data: pixel -> [quasars]
 
 import argparse
 import difflib
+import functools
 import glob
 import numpy as np
 import os
@@ -114,14 +115,53 @@ def record_pixel_only(file):
     return file, unique_pix, counts
 
 
-def record_from_deltas(file):
+def rebin_forest(grid_index, lambd, delta, weight, factor):
+    """Coadds a forest by averaging groups of `factor` neighbouring pixels.
+
+    Groups are fixed on the native wavelength grid (grid_index // factor),
+    not on the forest's own surviving pixels, so every forest shares the same
+    bin edges and a masked pixel just leaves its group with fewer members.
+    Delta and lambda are weighted means within each group and the new weight
+    is the sum of the weights, the usual inverse-variance coadd. Groups whose
+    weights add up to zero are dropped.
+
+    The weights here are the ones in the delta file, before the redshift
+    evolution factor: that is applied afterwards at the coadded redshift.
+
+    Returns (lambd, delta, weight) of the coadded forest.
+    """
+    _, group = np.unique(grid_index // factor, return_inverse=True)
+    weight_sum = np.bincount(group, weights=weight)
+    keep = weight_sum > 0
+    weight_sum = weight_sum[keep]
+    lambd = np.bincount(group, weights=weight*lambd)[keep] / weight_sum
+    delta = np.bincount(group, weights=weight*delta)[keep] / weight_sum
+    return lambd, delta, weight_sum
+
+
+def spacing_sums(lambd, dc):
+    """Sums of the separations between consecutive pixels of a forest, in
+    Angstrom and Mpc/h, and how many separations there are. Added up over
+    the dataset, they give the mean pixel spacing that main() reports."""
+    if len(lambd) < 2:
+        return np.zeros(3)
+    return np.array([lambd[-1] - lambd[0], dc[-1] - dc[0], len(lambd) - 1])
+
+
+def record_from_deltas(file, rebin=1):
     """ Extracts all forests data from a single delta file to a list
     of objects of type quasar.
 
-    file - deltafile*.fits.gz from PICCA
+    file  - deltafile*.fits.gz from PICCA
+    rebin - number of neighbouring pixels to average into one (1 = none),
+            see rebin_forest
+
+    Returns (list_of_forests, spacing), where spacing holds the spacing_sums
+    of the forests before and after rebinning, as a 2x3 array.
     """
     print('Extracting from file ',file)
     list_of_forests = []
+    spacing = np.zeros((2, 3))
     keys = params.delta_keys
     deltafile = fitsio.FITS(file)
     check_keys(deltafile, file)
@@ -134,31 +174,39 @@ def record_from_deltas(file):
     lambd_list = deltafile[keys['lambda']][:]
     deltas = deltafile[keys['delta']].read()
     weights = deltafile[keys['weight']].read()
+    grid_index = np.arange(len(lambd_list))
     for i in range(numberofforests):
+        delta_row = deltas[i]
+        mask = np.isfinite(delta_row)
+        lambd = lambd_list[mask]
+        delta = delta_row[mask]
+        weight = weights[i][mask]
+        spacing[0] += spacing_sums(lambd, cosmology.dc_interpol(lambd/params.lambdaa - 1))
+        if rebin > 1:
+            lambd, delta, weight = rebin_forest(grid_index[mask], lambd, delta,
+                                                weight, rebin)
         forest_data = quasar(metadata[keys['los_id']][i],
             metadata[keys['los_id']][i],
             metadata[keys['targetid']][i],
             metadata[keys['ra']][i],
             metadata[keys['dec']][i],
-            numberoflambdas)
-        delta_row = deltas[i]
-        mask = np.isfinite(delta_row)
-        lambd = lambd_list[mask]
+            len(lambd))
         z = lambd/params.lambdaa - 1
         loglam = np.log10(lambd)
         correctionfactor=np.power((z + 1.)/(1. + params.z_ref), params.gammaovertwo)
-        forest_data.we = weights[i][mask] * correctionfactor
-        forest_data.fill_dw(delta_row[mask], loglam, True)
+        forest_data.we = weight * correctionfactor
+        forest_data.fill_dw(delta, loglam, True)
         #forest_data.dw = forest.data['WEIGHT']*forest.data['DELTA']*correctionfactor
         
         comov_distance = cosmology.dc_interpol(z)
+        spacing[1] += spacing_sums(lambd, comov_distance)
         forest_data.dc = comov_distance
         forest_data.redshift = z
         forest_data.rx = forest_data.x * comov_distance
         forest_data.ry = forest_data.y * comov_distance
         forest_data.rz = forest_data.z * comov_distance
         list_of_forests.append(forest_data)
-    return list_of_forests
+    return list_of_forests, spacing
 
 
 def group_files_by_shared_pixels(file_pixels, pixel_forest_count, split_number):
@@ -235,6 +283,21 @@ def group_files_by_shared_pixels(file_pixels, pixel_forest_count, split_number):
     return chunk_files, pixel_file
 
 
+def report_spacing(spacing, rebin):
+    """Prints the mean separation between consecutive pixels over all
+    forests, before and after rebinning. It is a rough figure: the spacing
+    in Mpc/h grows along a forest with redshift, and masked pixels count as
+    wider gaps."""
+    label = ['before rebinning', 'after rebinning'] if rebin > 1 else ['']
+    for row, name in zip(spacing, label):
+        if row[2] == 0:
+            continue
+        print('Mean distance between neighbouring points%s: %.3f Angstrom, %.3f Mpc/h'
+              % (' ' + name if name else '', row[0]/row[2], row[1]/row[2]))
+    if rebin > 1 and spacing[0, 2] > 0 and spacing[1, 2] > 0:
+        print('Compare with bin_size_r = %s Mpc/h.' % params.bin_size_r)
+
+
 def main():
     parser = argparse.ArgumentParser(formatter_class=argparse.ArgumentDefaultsHelpFormatter,
         description='Takes delta files by picca and stores data in data.npy.')
@@ -244,11 +307,19 @@ def main():
         help = 'Directory where the data will be stored.')
     parser.add_argument('--split-number', type=int, default = 1,
         help = 'Number of files to split the data.')
+    parser.add_argument('--rebin', type=int, default = params.rebin,
+        help = 'Average every REBIN neighbouring pixels of the native '
+               'wavelength grid into one (1 = keep the native sampling). '
+               'Defaults to rebin in parameters.yml.')
     parser.add_argument('--statistics', action = 'store_true', required = False,
         help = 'Write the sizes and neighbors diagnostic files to the data '
                'directory. Counting neighbours needs a full neighbour search, '
                'which is a large part of the runtime.')
     args = parser.parse_args()
+    if args.rebin < 1:
+        parser.error('--rebin must be a positive integer, got %d' % args.rebin)
+    if args.rebin > 1:
+        print('Rebinning the deltas: averaging every %d neighbouring pixels.' % args.rebin)
 
     if os.path.exists(args.data_dir):
         warnings.warn('The output delta directory already exists. This procedure might mix deltas from a different run.')
@@ -317,6 +388,8 @@ def main():
     min_distance = 1e10
     j = 0
     pixel_count = {}
+    spacing = np.zeros((2, 3))
+    extract = functools.partial(record_from_deltas, rebin=args.rebin)
 
     for chunk_number in range(1, args.split_number + 1):
         files_for_chunk = sorted(chunk_files[chunk_number])
@@ -324,8 +397,9 @@ def main():
         if files_for_chunk:
             print('Extracting chunk %d/%d from %d file(s) (pass 2 of 2).'
                   % (chunk_number, args.split_number, len(files_for_chunk)))
-            data_list = pool.map(record_from_deltas, files_for_chunk)
-            for list_of_forests in data_list:
+            data_list = pool.map(extract, files_for_chunk)
+            for list_of_forests, file_spacing in data_list:
+                spacing += file_spacing
                 for forest_data in list_of_forests:
                     # Should always be true by construction --
                     # group_files_by_shared_pixels keeps every pixel a
@@ -347,6 +421,8 @@ def main():
         np.save(os.path.join(args.data_dir, 'data' + str(chunk_number)), subdata)
         del subdata
 
+    report_spacing(spacing, args.rebin)
+
     angmax = 2*np.arcsin(0.5*params.rtmax/min_distance)
     print('Minimum comoving distance to a forest (Mpc/h):',min_distance)
     print('Maximum angle between pairs of skewers that are used (rad):', angmax)
@@ -363,7 +439,8 @@ def main():
     # (the streaming upload in streaming_upload.py).
     np.save(os.path.join(args.data_dir, 'data_index'),
             {'pixel_file': pixel_file, 'min_distance': min_distance,
-             'pixel_count': pixel_count, 'max_lenght': int(max_lenght)})
+             'pixel_count': pixel_count, 'max_lenght': int(max_lenght),
+             'rebin': args.rebin})
 
     # The neighbour search is only needed for these diagnostics: the
     # correlation and distortion both call forest.neighborhood() and
